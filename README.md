@@ -121,11 +121,19 @@ cp .env.sample .env        # fill in RAYLINE_ROUTER_API_KEY
 
 `up` is the only step that works before Forgejo exists — the rest of `.env` needs
 accounts and tokens that can only be minted once Forgejo has booted, which is why
-this is two passes. Open <http://localhost:3000> and register your own admin
-account first (the first account registered becomes admin; self-registration is
-then disabled).
+this is two passes.
 
-Then, in Forgejo:
+Self-registration is off (`DISABLE_REGISTRATION` in `docker-compose.yml`), so the
+first account is made with Forgejo's own CLI rather than through the sign-up page:
+
+```bash
+docker compose exec -u git forgejo \
+    forgejo admin user create --admin --username you --email you@example.com \
+    --random-password
+```
+
+It prints a generated password; log in with it at <http://localhost:3000> and
+Forgejo will ask you to choose a new one. Then, in Forgejo:
 
 1. Create **two** bot accounts, `pingpong-reviewer` and `pingpong-coder`, and put a
    token from each into `.env` as `FORGEJO_REVIEWER_TOKEN` and
@@ -139,6 +147,14 @@ Then, in Forgejo:
    counted from commits carrying `BOT_EMAIL`, so if the reviewer shared it, its own
    commits would count as rounds. Neither account should author PRs: Forgejo
    refuses to let an account review its own.
+
+   Admin → User Accounts → Create User Account does this, or the same CLI as
+   above without `--admin`:
+
+   ```bash
+   docker compose exec -u git forgejo forgejo admin user create \
+       --username pingpong-coder --email pingpong-coder@local --random-password
+   ```
 2. Set `PINGPONG_WEBHOOK_SECRET` to any long random string.
 3. Add a repository webhook: `http://api:8080/webhook`, content type JSON, the
    same secret, events **Pull Request** and **Pull Request Review**.
