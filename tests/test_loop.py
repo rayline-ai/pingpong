@@ -32,16 +32,23 @@ class TestParseVerdict(unittest.TestCase):
     def test_missing_verdict_is_not_an_approval(self):
         # Silence must never approve, or a truncated or failed review would
         # merge itself.
-        self.assertEqual(loop.parse_verdict("I ran out of tokens"),
-                         forgejo.REQUEST_CHANGES)
-        self.assertEqual(loop.parse_verdict(""), forgejo.REQUEST_CHANGES)
+        self.assertNotEqual(loop.parse_verdict("I ran out of tokens"), forgejo.APPROVED)
+        self.assertNotEqual(loop.parse_verdict(""), forgejo.APPROVED)
+
+    def test_missing_verdict_is_not_a_review_either(self):
+        # None, not REQUEST_CHANGES: an agent runtime that failed while exiting 0
+        # would otherwise be posted as a genuine "changes requested" review and
+        # spend a round. run_round halts on None instead.
+        self.assertIsNone(loop.parse_verdict("HTTP 401: Invalid credentials."))
+        self.assertIsNone(loop.parse_verdict("I ran out of tokens"))
+        self.assertIsNone(loop.parse_verdict(""))
+        self.assertIsNone(loop.parse_verdict(None))
 
     def test_verdict_inside_prose_is_ignored(self):
         # Only a line that is *only* a verdict counts, so the reviewer quoting
         # the contract back at us does not decide the round.
-        self.assertEqual(
-            loop.parse_verdict("You should end with VERDICT: APPROVE when done."),
-            forgejo.REQUEST_CHANGES)
+        self.assertIsNone(
+            loop.parse_verdict("You should end with VERDICT: APPROVE when done."))
 
 
 class TestRender(unittest.TestCase):
@@ -242,3 +249,99 @@ class TestArtifactExclude(unittest.TestCase):
         self.assertEqual(
             gitops.run(["diff", "--cached", "--name-only"], cwd=repo).splitlines(),
             ["vendor.pyc"])
+
+
+class TestNoVerdictNote(unittest.TestCase):
+    def test_quotes_what_came_back(self):
+        note = loop._no_verdict_note(1, "HTTP 401: Invalid credentials.")
+        self.assertIn("HTTP 401: Invalid credentials.", note)
+        self.assertIn("no `VERDICT:` line", note)
+
+    def test_survives_empty_output(self):
+        self.assertIn("(no output)", loop._no_verdict_note(2, ""))
+
+    def test_long_output_is_truncated(self):
+        note = loop._no_verdict_note(1, "x" * 10000)
+        self.assertIn("truncated", note)
+        self.assertLess(len(note), 3000)
+
+
+class _FakeForgejo:
+    """Records writes so a test can assert which ones happened."""
+
+    def __init__(self):
+        self.comments = []
+        self.created_reviews = []
+
+    def pull_request(self, *a):
+        return {"state": "open", "merged": False, "title": "t", "body": "b",
+                "head": {"ref": "feature"}, "base": {"ref": "main"}}
+
+    def pull_commits(self, *a):
+        return []
+
+    def reviews(self, *a):
+        return []
+
+    def clone_url(self, owner, repo, token=None):
+        return "http://example.invalid/%s/%s.git" % (owner, repo)
+
+    def comment(self, owner, repo, index, body):
+        self.comments.append(body)
+
+    def create_review(self, owner, repo, index, event, body):
+        self.created_reviews.append((event, body))
+
+
+class _Cfg:
+    bot_name = "pingpong-coder"
+    bot_email = "pingpong-coder@local"
+    coder_token = "t"
+    max_rounds = 3
+    max_diff_bytes = 60000
+    review_timeout = fix_timeout = 60
+    work_root = "/tmp/pingpong-test"
+    reviewer_container = coder_container = "c"
+    prompts_dir = os.path.join(
+        os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "prompts")
+
+
+class TestRunRoundOnBrokenRuntime(unittest.TestCase):
+    """An agent runtime that fails while exiting 0 must not become a review.
+
+    The regression: Hermes printed `HTTP 401: Invalid credentials.` and exited 0,
+    which was posted to the PR as a REQUEST_CHANGES review and drove a fix round.
+    """
+
+    def setUp(self):
+        self.fj = _FakeForgejo()
+        self.calls = []
+        self._saved = (loop.gitops.prepare_clone, loop.gitops.changed_files,
+                       loop.gitops.diff, loop.gitops.is_dirty,
+                       loop.agents.review, loop.agents.fix)
+        loop.gitops.prepare_clone = lambda *a, **k: ("/tmp/clone", "origin/main")
+        loop.gitops.changed_files = lambda *a, **k: ["discount.py"]
+        loop.gitops.diff = lambda *a, **k: "+ some change"
+        loop.gitops.is_dirty = lambda *a, **k: False
+        loop.agents.fix = lambda *a, **k: self.calls.append("fix") or "fixed"
+
+    def tearDown(self):
+        (loop.gitops.prepare_clone, loop.gitops.changed_files, loop.gitops.diff,
+         loop.gitops.is_dirty, loop.agents.review, loop.agents.fix) = self._saved
+
+    def test_error_text_is_not_posted_as_a_review(self):
+        loop.agents.review = lambda *a, **k: "HTTP 401: Invalid credentials."
+        result = loop.run_round(_Cfg(), self.fj, "o", "r", 1, log=lambda m: None)
+
+        self.assertEqual(result["action"], "errored")
+        self.assertEqual(self.fj.created_reviews, [])       # no review event at all
+        self.assertEqual(len(self.fj.comments), 1)
+        self.assertIn("HTTP 401", self.fj.comments[0])
+        self.assertEqual(self.calls, [])                     # and no round was spent fixing
+
+    def test_a_real_request_changes_still_posts_and_fixes(self):
+        loop.agents.review = lambda *a, **k: "Needs work.\n\nVERDICT: REQUEST_CHANGES"
+        loop.run_round(_Cfg(), self.fj, "o", "r", 1, log=lambda m: None)
+
+        self.assertEqual(self.fj.created_reviews[0][0], forgejo.REQUEST_CHANGES)
+        self.assertEqual(self.calls, ["fix"])

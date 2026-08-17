@@ -23,6 +23,14 @@ services:
       USER_UID: "1000"
       USER_GID: "1000"
       FORGEJO__server__ROOT_URL: ${FORGEJO_ROOT_URL:-http://localhost:3000/}
+      # Off from the very first boot, so there is no window in which a stranger
+      # who reaches the port can take the instance. That also means the sign-up
+      # page cannot mint the first admin — Forgejo only grants admin to the
+      # first *registered* account, and there will not be one. Create it with
+      # the CLI instead (see README "Setup"):
+      #   docker compose exec -u git forgejo \
+      #       forgejo admin user create --admin --username you \
+      #       --email you@example.com --random-password
       FORGEJO__service__DISABLE_REGISTRATION: "true"
       # Without these Forgejo boots to its interactive installer and the API
       # cannot reach the API surface at all.

@@ -17,16 +17,23 @@ VERDICT_RE = re.compile(r"^\s*VERDICT:\s*(APPROVE|REQUEST_CHANGES)\s*$",
 
 
 def parse_verdict(text):
-    """Translate the reviewer's text into a Forgejo review event.
+    """Translate the reviewer's text into a Forgejo review event, or None.
 
     This is a boundary translator, not the store: the authoritative verdict is
     the review state on the PR. The last VERDICT: line wins, because a reviewer
-    that reconsiders mid-answer means the later line. No verdict at all is
-    REQUEST_CHANGES — silence must never approve.
+    that reconsiders mid-answer means the later line.
+
+    No VERDICT: line at all returns None, not REQUEST_CHANGES. Silence still
+    must never approve — but it must not be posted as a review either. The
+    reviewer's contract requires that line, so its absence means we are not
+    looking at a review: the runtime failed, the model ignored the contract, or
+    the answer was truncated. Turning that into a REQUEST_CHANGES event makes a
+    broken run indistinguishable from a reviewer that genuinely wants changes,
+    and spends a round on it. run_round halts for a human instead.
     """
     matches = VERDICT_RE.findall(text or "")
     if not matches:
-        return forgejo.REQUEST_CHANGES
+        return None
     return (forgejo.APPROVED if matches[-1].upper() == "APPROVE"
             else forgejo.REQUEST_CHANGES)
 
@@ -134,6 +141,16 @@ def run_round(cfg, fj, owner, repo, index, log=print):
     review_text = agents.review(cfg, clone, runs_dir, review_prompt, round_no)
     verdict = parse_verdict(review_text)
 
+    if verdict is None:
+        # Not a review. Post a plain comment — a comment carries no approval
+        # state, so this cannot gate a merge, and it does not become the
+        # `previous_context` of the next round the way a review body would.
+        log("reviewer produced no VERDICT: line — halting")
+        fj.comment(owner, repo, index, _no_verdict_note(round_no, review_text))
+        return {"action": "errored", "round": round_no,
+                "reason": "reviewer produced no VERDICT: line",
+                "review": review_text}
+
     # A real review event, not a comment. A comment carries no approval state, so
     # it can neither gate a merge nor end the loop.
     fj.create_review(owner, repo, index, verdict, review_text)
@@ -160,6 +177,22 @@ def run_round(cfg, fj, owner, repo, index, log=print):
     pushed = gitops.push(clone, branch, log=log)
     return {"action": "fixed", "round": round_no, "sha": sha, "pushed": pushed,
             "review": review_text, "fix": fix_text}
+
+
+def _no_verdict_note(round_no, review_text):
+    """The comment left when the reviewer returns something that is not a review.
+
+    Quotes what actually came back: with the round halted, this output is the
+    only evidence of why, and the common cause — an agent runtime that failed
+    but still exited 0, e.g. printing `HTTP 401: Invalid credentials.` — is
+    diagnosable from one line of it.
+    """
+    body = _truncate((review_text or "").strip(), 2000) or "(no output)"
+    return ("PingPong round %d: the reviewer returned no `VERDICT:` line, so this "
+            "is not a review and no review event was posted. The round was "
+            "halted rather than counted. Usually the agent runtime failed — "
+            "check `pingpong logs` and the agent's Rayline router log. Needs a "
+            "human.\n\nWhat the reviewer returned:\n\n```\n%s\n```" % (round_no, body))
 
 
 def _commit_message(round_no, fix_text):
