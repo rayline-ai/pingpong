@@ -1,0 +1,12 @@
+# Secrets
+.env
+*.env
+!*.env.sample
+
+# Per-run state
+work/
+runs/
+logs/
+
+__pycache__/
+*.pyc

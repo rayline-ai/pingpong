@@ -1,0 +1,19 @@
+#!/usr/bin/env bash
+# Thin wrapper. `pingpong up|down|logs` drive compose; anything else is passed
+# straight to the CLI inside the running API container.
+set -euo pipefail
+
+cd "$(dirname "$0")"
+
+case "${1:-}" in
+    up)      shift; exec docker compose up -d --build "$@" ;;
+    down)    shift; exec docker compose down "$@" ;;
+    logs)    shift; exec docker compose logs -f "${@:-api}" ;;
+    ""|-h|--help)
+        echo "usage: pingpong up|down|logs"
+        echo "       pingpong doctor"
+        echo "       pingpong round owner/repo#123"
+        exit 0 ;;
+esac
+
+exec docker compose exec api python -m src.cli "$@"

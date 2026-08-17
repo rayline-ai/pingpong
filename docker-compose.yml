@@ -1,0 +1,120 @@
+# PingPong = Forgejo (UI, state, gating) + PingPongAPI (engine) + two Hermes agents.
+#
+# Why each agent runs its OWN Rayline router:
+#   `rld` binds 127.0.0.1 unconditionally — there is no bind-address flag. A single
+#   shared router container would therefore be unreachable from sibling containers.
+#   Containers have separate network and filesystem namespaces, so a router per
+#   agent is correct rather than a workaround: each binds its own loopback, and the
+#   `rld` pidfile singleton (guarded on the pidfile, not the ports) cannot collide.
+#   This is the same topology the proven Hermes setup uses — router beside the agent.
+#
+# It is still ONE config. rayline/pingpong.json is mounted into both; each agent
+# requests its role alias and Rayline resolves it via routes.model_routes.
+
+name: pingpong
+
+services:
+
+  forgejo:
+    image: codeberg.org/forgejo/forgejo:11
+    container_name: pingpong-forgejo
+    restart: unless-stopped
+    environment:
+      USER_UID: "1000"
+      USER_GID: "1000"
+      FORGEJO__server__ROOT_URL: ${FORGEJO_ROOT_URL:-http://localhost:3000/}
+      FORGEJO__service__DISABLE_REGISTRATION: "true"
+      # Without these Forgejo boots to its interactive installer and the API
+      # cannot reach the API surface at all.
+      FORGEJO__database__DB_TYPE: sqlite3
+      FORGEJO__database__PATH: /data/gitea/forgejo.db
+      FORGEJO__security__INSTALL_LOCK: "true"
+      # The webhook target is the `api` service on the compose network, which
+      # Forgejo treats as a private host and refuses to call unless allowed.
+      FORGEJO__webhook__ALLOWED_HOST_LIST: "*"
+    volumes:
+      - forgejo-data:/data
+    ports:
+      - "${FORGEJO_PORT:-3000}:3000"
+      - "${FORGEJO_SSH_PORT:-2222}:22"
+    networks: [pingpong]
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 30
+
+  api:
+    build:
+      context: .
+      dockerfile: docker/api.Dockerfile
+    container_name: pingpong-api
+    restart: unless-stopped
+    environment:
+      FORGEJO_URL: http://forgejo:3000
+      # Not guarded with :? — the token can only be minted after Forgejo's first
+      # boot, so requiring it here would make the stack unstartable. Missing
+      # values are reported by `pingpong doctor` instead.
+      FORGEJO_REVIEWER_TOKEN: ${FORGEJO_REVIEWER_TOKEN:-}
+      # Pushes use this one. Forgejo credits "added N commits" to the pusher, not
+      # the commit author, so a shared token shows the reviewer writing the fix.
+      FORGEJO_CODER_TOKEN: ${FORGEJO_CODER_TOKEN:-}
+      PINGPONG_WEBHOOK_SECRET: ${PINGPONG_WEBHOOK_SECRET:-}
+      REVIEWER_CONTAINER: pingpong-reviewer
+      CODER_CONTAINER: pingpong-coder
+      MAX_ROUNDS: ${MAX_ROUNDS:-3}
+      MAX_DIFF_BYTES: ${MAX_DIFF_BYTES:-60000}
+      REVIEW_TIMEOUT: ${REVIEW_TIMEOUT:-900}
+      FIX_TIMEOUT: ${FIX_TIMEOUT:-1200}
+      BOT_NAME: ${BOT_NAME:-pingpong-coder}
+      BOT_EMAIL: ${BOT_EMAIL:-pingpong-coder@local}
+    volumes:
+      - work:/work
+      - ./prompts:/app/prompts:ro
+      # The API drives the agents with `docker exec`, mirroring the `docker sandbox
+      # exec hermes` pattern the existing Hermes setup already relies on.
+      - /var/run/docker.sock:/var/run/docker.sock
+    ports:
+      - "${API_PORT:-8080}:8080"
+    depends_on:
+      forgejo:
+        condition: service_healthy
+    networks: [pingpong]
+
+  reviewer:
+    build:
+      context: .
+      dockerfile: docker/agent.Dockerfile
+    container_name: pingpong-reviewer
+    restart: unless-stopped
+    environment:
+      RAYLINE_ROUTER_API_KEY: ${RAYLINE_ROUTER_API_KEY:?set RAYLINE_ROUTER_API_KEY in .env}
+      HERMES_MODEL_ALIAS: reviewer-brain
+    volumes:
+      - ./rayline/pingpong.json:/etc/pingpong/rayline.json:ro
+      # Read-only mount, not an agent setting: the mount is the stronger,
+      # agent-independent guarantee that review and fix stay separable. If the
+      # reviewer could write, the two roles would collapse into one.
+      - work:/work:ro
+    networks: [pingpong]
+
+  coder:
+    build:
+      context: .
+      dockerfile: docker/agent.Dockerfile
+    container_name: pingpong-coder
+    restart: unless-stopped
+    environment:
+      RAYLINE_ROUTER_API_KEY: ${RAYLINE_ROUTER_API_KEY:?set RAYLINE_ROUTER_API_KEY in .env}
+      HERMES_MODEL_ALIAS: coder-brain
+    volumes:
+      - ./rayline/pingpong.json:/etc/pingpong/rayline.json:ro
+      - work:/work
+    networks: [pingpong]
+
+volumes:
+  forgejo-data:
+  work:
+
+networks:
+  pingpong:

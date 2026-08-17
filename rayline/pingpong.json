@@ -1,0 +1,97 @@
+{
+  "_comment": [
+    "The single Rayline RouterConfig for PingPong. PingPongAPI does not parse this",
+    "file \u2014 Rayline consumes it. Change a brain here and nothing else changes.",
+    "",
+    "`model_routes` keys are ARBITRARY ALIASES, not model ids. Each agent requests",
+    "its role alias and Rayline resolves it to the model below. The aliases are",
+    "what keeps the two roles independently retargetable: point one at a concrete",
+    "model and the other elsewhere, and nothing outside this file changes.",
+    "",
+    "Both currently resolve to `rayline-router`, which is not a model but the",
+    "cloud-side auto-router at api.rayline.ai \u2014 it picks per request (observed",
+    "choosing deepseek/deepseek-v4-flash for a trivial prompt). Note the trade:",
+    "the concrete model is no longer visible in the local rld log, which reports",
+    "only `selected=rayline-router`, and the reviewer and coder can land on the",
+    "same model, so they may share its blind spots.",
+    "",
+    "`routes.main` is the fallback for any request that names neither alias, and",
+    "`routes.subagent` covers delegated work. Both are on `rayline-router` too, so",
+    "every leg is auto-routed unless you pin it.",
+    "",
+    "TO SWITCH A ROLE TO A SPECIFIC CLOUD MODEL: replace `rayline-router` in that",
+    "alias's `model` with any id from the rayline-cloud `models` list below, e.g.",
+    "  \"coder-brain\": { \"endpoint\": \"rayline-cloud\", \"model\": \"gpt-5.6-terra\", ... }",
+    "That also puts the real model back in the rld log.",
+    "",
+    "TO SWITCH A ROLE TO A LOCAL MODEL: point it at the `ollama-local` endpoint,",
+    "  \"coder-brain\": { \"endpoint\": \"ollama-local\", \"model\": \"qwen3.5:9b-32k\", ... }",
+    "then `docker compose restart coder` so rld reloads this file. ollama speaks",
+    "Anthropic natively on /v1/messages, so nothing translates.",
+    "",
+    "THE `-32k` SUFFIX IS LOAD-BEARING. The two unsuffixed tags above (qwen2.5-coder:7b,",
+    "gemma4:26b-a4b-it-qat) are stock and will NOT call tools until you pin them the",
+    "same way. ollama sizes the context window from VRAM (OLLAMA_CONTEXT_LENGTH,",
+    "'default: 4k/32k/256k based on VRAM'), so a constrained host silently gets 4096",
+    "tokens \u2014 well under what the harness needs. Hermes sends 19",
+    "tools and a 23.6 KB system prompt; the overflow truncates the TOOL DEFINITIONS,",
+    "and the model then narrates shell commands as prose instead of calling tools \u2014",
+    "which reads exactly like 'this model is too dumb'. It is not. qwen3.5:9b and",
+    "qwen3.6:35b-a3b failed identically until the window was pinned. Rayline cannot",
+    "fix this for you: ollama ignores `options` on its compat routes. Bake it in:",
+    "  printf 'FROM qwen3.5:9b\\nPARAMETER num_ctx 32768\\n' > Modelfile",
+    "  ollama create qwen3.5:9b-32k -f Modelfile",
+    "Verify with `ollama ps` \u2014 the CONTEXT column must read 32768, not 4096.",
+    "With that pinned, qwen3.5:9b-32k drove a full unattended round on PR #7."
+  ],
+  "endpoints": [
+    {
+      "id": "rayline-cloud",
+      "protocol": "anthropic_messages",
+      "base_url": "https://api.rayline.ai",
+      "api_key_env": "RAYLINE_ROUTER_API_KEY",
+      "auth": "api_key",
+      "models": [
+        "rayline-router",
+        "gpt-5.6-terra",
+        "claude-sonnet-5",
+        "z-ai/glm-5.2"
+      ]
+    },
+    {
+      "id": "ollama-local",
+      "protocol": "anthropic_messages",
+      "base_url": "http://host.docker.internal:11434",
+      "models": [
+        "qwen3.5:9b-32k",
+        "qwen3.6:35b-a3b-32k",
+        "qwen2.5-coder:7b",
+        "gemma4:26b-a4b-it-qat"
+      ]
+    }
+  ],
+  "routes": {
+    "main": {
+      "endpoint": "rayline-cloud",
+      "model": "rayline-router",
+      "router": "rayline-local"
+    },
+    "subagent": {
+      "endpoint": "rayline-cloud",
+      "model": "rayline-router",
+      "router": "rayline-local"
+    },
+    "model_routes": {
+      "reviewer-brain": {
+        "endpoint": "rayline-cloud",
+        "model": "rayline-router",
+        "router": "rayline-local"
+      },
+      "coder-brain": {
+        "endpoint": "rayline-cloud",
+        "model": "rayline-router",
+        "router": "rayline-local"
+      }
+    }
+  }
+}
