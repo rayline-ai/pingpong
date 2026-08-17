@@ -89,6 +89,8 @@ services:
     restart: unless-stopped
     environment:
       RAYLINE_ROUTER_API_KEY: ${RAYLINE_ROUTER_API_KEY:?set RAYLINE_ROUTER_API_KEY in .env}
+      # Only needed if a role points at the `openrouter` endpoint.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       HERMES_MODEL_ALIAS: reviewer-brain
     volumes:
       - ./rayline/pingpong.json:/etc/pingpong/rayline.json:ro
@@ -106,6 +108,8 @@ services:
     restart: unless-stopped
     environment:
       RAYLINE_ROUTER_API_KEY: ${RAYLINE_ROUTER_API_KEY:?set RAYLINE_ROUTER_API_KEY in .env}
+      # Only needed if a role points at the `openrouter` endpoint.
+      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       HERMES_MODEL_ALIAS: coder-brain
     volumes:
       - ./rayline/pingpong.json:/etc/pingpong/rayline.json:ro
