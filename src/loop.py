@@ -80,11 +80,15 @@ def _previous_context(fj, owner, repo, index):
     return ""
 
 
-def run_round(cfg, fj, owner, repo, index, log=print):
+def run_round(cfg, fj, owner, repo, index, log=print, reset=False):
     """Run one review (and, if it asks for changes, one fix) on a PR.
 
     Returns a dict describing what happened. The next round, if any, arrives as
     the webhook fired by this round's push.
+
+    `reset` banks the current round count in a marker comment, so a human who
+    asks for another run gets a fresh MAX_ROUNDS budget rather than whatever was
+    left of the old one.
     """
     pr = fj.pull_request(owner, repo, index)
     if pr.get("state") != "open":
@@ -98,12 +102,22 @@ def run_round(cfg, fj, owner, repo, index, log=print):
         return {"action": "skipped", "reason": "pull request has no head/base ref"}
 
     commits = fj.pull_commits(owner, repo, index)
-    rounds = forgejo.rounds_done(commits, cfg.bot_email)
+    if reset:
+        banked = forgejo.rounds_done(commits, cfg.bot_email)
+        fj.comment(owner, repo, index,
+                   "Round budget reset — %d more round(s) from here.\n\n%s"
+                   % (cfg.max_rounds, forgejo.RESET_MARKER % banked))
+        baseline = banked
+    else:
+        baseline = forgejo.rounds_baseline(fj.issue_comments(owner, repo, index))
+
+    rounds = forgejo.rounds_done(commits, cfg.bot_email, baseline)
     if rounds >= cfg.max_rounds:
         log("round limit reached (%d)" % cfg.max_rounds)
         fj.comment(owner, repo, index,
                    "PingPong stopped after %d round(s) without an approval. "
-                   "Needs a human." % rounds)
+                   "Needs a human — comment `@pingpong` to run %d more."
+                   % (rounds, cfg.max_rounds))
         return {"action": "stopped", "reason": "round limit", "rounds": rounds}
 
     round_no = rounds + 1

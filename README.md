@@ -39,6 +39,12 @@ loop stops, comments *"needs a human"* and leaves the PR unmerged — so a pair 
 cannot converge costs three rounds, not an unbounded number. Both prompts are told
 which round they are on and what the limit is.
 
+**Comment `@pingpong` on the PR to run it again.** `@pingpong-reviewer` and
+`@pingpong-coder` work too, so whichever name the mention autocomplete offers you
+is fine. That grants a fresh `MAX_ROUNDS` from that point: the count so far is
+banked in a hidden marker in the comment PingPong posts back, keeping the PR the
+only state store. Comments from the bots themselves are ignored.
+
 ## Models
 
 Neither the code nor `.env` names a model. Both live in one file:

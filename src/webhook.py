@@ -24,6 +24,13 @@ _PR_LOCKS_GUARD = threading.Lock()
 
 TRIGGER_ACTIONS = {"opened", "reopened", "synchronize", "synchronized"}
 
+# A human asking for another run. Any of the three bot names works, because
+# Forgejo's mention autocomplete offers whichever ones are collaborators and
+# nobody should have to remember which. Matched as literal text — Forgejo has no
+# command syntax of its own, and the comment is never shown to a model.
+COMMAND_MENTION = "@pingpong"
+COMMAND_REASON = "comment command"
+
 
 def _pr_lock(key):
     with _PR_LOCKS_GUARD:
@@ -41,7 +48,7 @@ def verify(secret, signature, body):
     return hmac.compare_digest(expected, signature.strip())
 
 
-def should_run(event, payload, bot_name):
+def should_run(event, payload, bot_name, bot_logins=()):
     """Decide whether this delivery is a round trigger.
 
     Returns (run, reason).
@@ -53,6 +60,22 @@ def should_run(event, payload, bot_name):
         if action not in TRIGGER_ACTIONS:
             return False, "pull_request action %r is not a trigger" % action
         return True, "pull_request %s" % action
+
+    if event == "issue_comment":
+        if action != "created":
+            return False, "issue_comment action %r is not a trigger" % action
+        # `is None` rather than falsy: Forgejo sends null for a plain issue, but
+        # an empty object is still a pull request.
+        if (payload.get("issue") or {}).get("pull_request") is None:
+            return False, "comment is on an issue, not a pull request"
+        body = ((payload.get("comment") or {}).get("body") or "")
+        # The marker the reset itself posts contains no mention, but a bot could
+        # still quote one — checking the sender keeps that from looping.
+        if sender == bot_name or sender in bot_logins:
+            return False, "comment by the bot itself"
+        if COMMAND_MENTION not in body.lower():
+            return False, "comment is not a command"
+        return True, COMMAND_REASON
 
     if event == "pull_request_review":
         # A human asking for changes should drive a round the same way the agent
@@ -74,7 +97,9 @@ def handle(cfg, payload, reason):
     owner = ((repository.get("owner") or {}).get("login")
              or (repository.get("owner") or {}).get("username") or "")
     name = repository.get("name") or ""
-    number = (payload.get("pull_request") or {}).get("number") or payload.get("number")
+    number = ((payload.get("pull_request") or {}).get("number")
+              or (payload.get("issue") or {}).get("number")
+              or payload.get("number"))
 
     if not (owner and name and number):
         log("ignoring delivery: could not identify the pull request")
@@ -91,7 +116,8 @@ def handle(cfg, payload, reason):
     try:
         log("%s: %s" % (key, reason))
         fj = forgejo.Forgejo(cfg.forgejo_url, cfg.reviewer_token)
-        result = loop.run_round(cfg, fj, owner, name, int(number), log=log)
+        result = loop.run_round(cfg, fj, owner, name, int(number), log=log,
+                                reset=reason == COMMAND_REASON)
         log("%s: %s" % (key, json.dumps({k: v for k, v in result.items()
                                          if k in ("action", "reason", "round",
                                                   "sha", "pushed")})))
@@ -147,7 +173,8 @@ class Handler(BaseHTTPRequestHandler):
                  or self.headers.get("X-Gitea-Event")
                  or self.headers.get("X-GitHub-Event") or "").lower()
 
-        run, reason = should_run(event, payload, self.cfg.bot_name)
+        run, reason = should_run(event, payload, self.cfg.bot_name,
+                                 (self.cfg.reviewer_login, self.cfg.coder_login))
         if not run:
             self._reply(202, "ignored: %s" % reason)
             return
