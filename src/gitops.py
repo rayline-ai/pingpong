@@ -63,6 +63,8 @@ def prepare_clone(clone_url, work_root, name, branch, base, bot_name, bot_email,
     run(["config", "core.autocrlf", "false"], cwd=clone)
     run(["config", "core.eol", "lf"], cwd=clone)
 
+    _write_exclude(clone)
+
     log("fetching %s" % branch)
     run(["fetch", "--prune", "origin", branch], cwd=clone, timeout=1800)
 
@@ -77,13 +79,40 @@ def prepare_clone(clone_url, work_root, name, branch, base, bot_name, bot_email,
     # actually shows.
     run(["checkout", "-B", branch, "origin/" + branch], cwd=clone)
     run(["reset", "--hard", "origin/" + branch], cwd=clone)
-    run(["clean", "-fd"], cwd=clone)
+    # -x also removes the excluded artifacts below, so a round never inherits a
+    # previous round's build output.
+    run(["clean", "-fdx"], cwd=clone)
 
     base_ref = base if _rev_exists(clone, base) else "origin/" + base_remote
     if not _rev_exists(clone, base_ref):
         raise GitError("base ref %r not found in the clone" % base)
 
     return clone, base_ref
+
+
+# Build and tool output the agent produces by running the code it is fixing.
+# `commit_all` stages everything in the tree, so without this a PR picks up
+# whatever the agent's test run left behind — observed: __pycache__/*.pyc.
+ARTIFACTS = (
+    "__pycache__/", "*.py[cod]", "*.egg-info/", ".eggs/",
+    ".pytest_cache/", ".mypy_cache/", ".ruff_cache/", ".tox/", ".coverage",
+    ".venv/", "venv/", "node_modules/", ".DS_Store",
+)
+
+
+def _write_exclude(repo):
+    """Ignore build artifacts for this clone only.
+
+    Goes in `.git/info/exclude` rather than `.gitignore`: it is never committed,
+    so the target repo's own ignore rules are left exactly as its authors wrote
+    them. It applies to untracked files only — a repo that deliberately tracks
+    one of these can still have it modified.
+    """
+    path = os.path.join(repo, ".git", "info")
+    os.makedirs(path, exist_ok=True)
+    with open(os.path.join(path, "exclude"), "w", encoding="utf-8") as fh:
+        fh.write("# Written by PingPong. Not part of the repository.\n")
+        fh.write("\n".join(ARTIFACTS) + "\n")
 
 
 def _rev_exists(repo, ref):

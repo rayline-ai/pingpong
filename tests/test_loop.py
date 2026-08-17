@@ -200,3 +200,45 @@ class TestCommitSubjectSource(unittest.TestCase):
     def test_falls_back_to_prose_without_a_fixed_section(self):
         subject = loop._commit_message(1, "Removed the duplicated retry loop.").splitlines()[0]
         self.assertEqual(subject, "pingpong round 1: Removed the duplicated retry loop.")
+
+
+class TestArtifactExclude(unittest.TestCase):
+    """Build output the agent produces must not land in the PR."""
+
+    def _repo(self):
+        import tempfile, shutil
+        from src import gitops
+        path = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, path, True)
+        gitops.run(["init", "-q", "-b", "main"], cwd=path)
+        return gitops, path
+
+    def test_pycache_is_not_staged(self):
+        gitops, repo = self._repo()
+        gitops._write_exclude(repo)
+        os.makedirs(os.path.join(repo, "__pycache__"))
+        open(os.path.join(repo, "__pycache__", "m.cpython-313.pyc"), "w").close()
+        open(os.path.join(repo, "m.py"), "w").write("x = 1\n")
+        gitops.run(["add", "-A"], cwd=repo)
+        staged = gitops.run(["diff", "--cached", "--name-only"], cwd=repo).splitlines()
+        self.assertEqual(staged, ["m.py"])
+
+    def test_leaves_the_repos_own_gitignore_alone(self):
+        gitops, repo = self._repo()
+        gitops._write_exclude(repo)
+        self.assertFalse(os.path.exists(os.path.join(repo, ".gitignore")))
+
+    def test_an_already_tracked_artifact_still_updates(self):
+        # The exclude applies to untracked files only, so a repo that
+        # deliberately commits one of these keeps working.
+        gitops, repo = self._repo()
+        open(os.path.join(repo, "vendor.pyc"), "w").write("a")
+        gitops.run(["add", "-f", "vendor.pyc"], cwd=repo)
+        gitops.run(["-c", "user.email=t@t", "-c", "user.name=t",
+                    "commit", "-qm", "seed"], cwd=repo)
+        gitops._write_exclude(repo)
+        open(os.path.join(repo, "vendor.pyc"), "w").write("b")
+        gitops.run(["add", "-A"], cwd=repo)
+        self.assertEqual(
+            gitops.run(["diff", "--cached", "--name-only"], cwd=repo).splitlines(),
+            ["vendor.pyc"])

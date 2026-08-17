@@ -56,6 +56,19 @@ alias and Rayline resolves it. Changing a brain is a one-line edit here — no c
 change, no rebuild. `rayline-router` lets Rayline pick per request; name a real
 model instead (`gpt-5.6-terra`, `z-ai/glm-5.2`, …) to pin one.
 
+### Running a role on OpenRouter
+
+Put `OPENROUTER_API_KEY` in `.env`, point an alias at the `openrouter` endpoint
+already in the config, and recreate that agent so it picks up the key:
+
+```jsonc
+"coder-brain": { "endpoint": "openrouter", "model": "moonshotai/kimi-k3" }
+```
+
+```bash
+docker compose up -d coder
+```
+
 ### Running a role on a local model
 
 Needs [ollama](https://ollama.com) on the host. Point an alias at the
