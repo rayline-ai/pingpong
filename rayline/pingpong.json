@@ -24,6 +24,10 @@
     "  \"coder-brain\": { \"endpoint\": \"rayline-cloud\", \"model\": \"gpt-5.6-terra\", ... }",
     "That also puts the real model back in the rld log.",
     "",
+    "TO SWITCH A ROLE TO OPENROUTER: set OPENROUTER_API_KEY in .env, then",
+    "  \"coder-brain\": { \"endpoint\": \"openrouter\", \"model\": \"moonshotai/kimi-k3\", ... }",
+    "and `docker compose up -d coder` so the container picks up the key.",
+    "",
     "TO SWITCH A ROLE TO A LOCAL MODEL: point it at the `ollama-local` endpoint,",
     "  \"coder-brain\": { \"endpoint\": \"ollama-local\", \"model\": \"qwen3.5:9b-32k\", ... }",
     "then `docker compose restart coder` so rld reloads this file. ollama speaks",
@@ -56,6 +60,18 @@
         "gpt-5.6-terra",
         "claude-sonnet-5",
         "z-ai/glm-5.2"
+      ]
+    },
+    {
+      "id": "openrouter",
+      "protocol": "anthropic_messages",
+      "base_url": "https://openrouter.ai/api",
+      "api_key_env": "OPENROUTER_API_KEY",
+      "auth": "bearer",
+      "models": [
+        "moonshotai/kimi-k3",
+        "z-ai/glm-5.2",
+        "anthropic/claude-sonnet-4.6"
       ]
     },
     {
