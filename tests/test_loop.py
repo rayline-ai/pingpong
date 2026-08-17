@@ -283,6 +283,9 @@ class _FakeForgejo:
     def reviews(self, *a):
         return []
 
+    def issue_comments(self, *a):
+        return [{"body": body} for body in self.comments]
+
     def clone_url(self, owner, repo, token=None):
         return "http://example.invalid/%s/%s.git" % (owner, repo)
 
@@ -345,3 +348,66 @@ class TestRunRoundOnBrokenRuntime(unittest.TestCase):
 
         self.assertEqual(self.fj.created_reviews[0][0], forgejo.REQUEST_CHANGES)
         self.assertEqual(self.calls, ["fix"])
+
+
+class TestCommentCommand(unittest.TestCase):
+    """A human comment mentioning any of the bot names starts a round."""
+
+    BOTS = ("pingpong-reviewer", "pingpong-coder")
+
+    def check(self, body, sender="marcin", pull_request={}, action="created"):
+        payload = {"action": action, "sender": {"login": sender},
+                   "issue": {"number": 9, "pull_request": pull_request},
+                   "comment": {"body": body}}
+        return webhook.should_run("issue_comment", payload, "pingpong-coder", self.BOTS)
+
+    def test_any_of_the_three_names_triggers(self):
+        for body in ("@pingpong", "@pingpong-reviewer have another look",
+                     "please @pingpong-coder", "@PingPong AGAIN"):
+            self.assertTrue(self.check(body)[0], body)
+
+    def test_ordinary_comment_does_not(self):
+        self.assertFalse(self.check("looks good to me")[0])
+        self.assertFalse(self.check("emailed pingpong@example.com")[0])
+
+    def test_the_bots_own_comment_does_not(self):
+        # Otherwise the marker comment the reset posts would trigger a round,
+        # which would post another marker.
+        for bot in self.BOTS:
+            self.assertFalse(self.check("@pingpong", sender=bot)[0], bot)
+
+    def test_plain_issue_does_not(self):
+        self.assertFalse(self.check("@pingpong", pull_request=None)[0])
+
+    def test_only_on_creation(self):
+        self.assertFalse(self.check("@pingpong", action="edited")[0])
+
+
+class TestRoundBudgetReset(unittest.TestCase):
+    """The marker comment is the state store for the reset."""
+
+    def commits(self, n):
+        return [{"commit": {"author": {"email": "pingpong-coder@local"}}}] * n
+
+    def test_baseline_subtracts_banked_rounds(self):
+        self.assertEqual(forgejo.rounds_done(self.commits(3), "pingpong-coder@local"), 3)
+        self.assertEqual(
+            forgejo.rounds_done(self.commits(3), "pingpong-coder@local", baseline=3), 0)
+
+    def test_baseline_is_read_from_the_marker(self):
+        comments = [{"body": "please fix"},
+                    {"body": "Round budget reset.\n\n" + forgejo.RESET_MARKER % 2}]
+        self.assertEqual(forgejo.rounds_baseline(comments), 2)
+
+    def test_no_marker_means_no_baseline(self):
+        self.assertEqual(forgejo.rounds_baseline([{"body": "hi"}]), 0)
+        self.assertEqual(forgejo.rounds_baseline([]), 0)
+
+    def test_highest_marker_wins(self):
+        # A smaller number would hand out more rounds than the human asked for.
+        comments = [{"body": forgejo.RESET_MARKER % 5}, {"body": forgejo.RESET_MARKER % 2}]
+        self.assertEqual(forgejo.rounds_baseline(comments), 5)
+
+    def test_a_stale_baseline_never_goes_negative(self):
+        self.assertEqual(
+            forgejo.rounds_done(self.commits(1), "pingpong-coder@local", baseline=4), 0)

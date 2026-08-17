@@ -64,6 +64,13 @@ class Config:
         self.bot_name = os.environ.get("BOT_NAME", "pingpong-coder")
         self.bot_email = os.environ.get("BOT_EMAIL", "pingpong-coder@local")
 
+        # Forgejo logins of the two bot accounts. Only used to ignore the bots'
+        # own comments: a `@pingpong` mention the bot writes must not trigger a
+        # round, or the loop would feed itself. Default to the container names,
+        # which the README's setup makes match.
+        self.reviewer_login = os.environ.get("REVIEWER_LOGIN", self.reviewer_container)
+        self.coder_login = os.environ.get("CODER_LOGIN", self.coder_container)
+
         # The coder's own Forgejo token, used only to push. Forgejo credits the
         # "added N commits" event to the pusher rather than the commit author, so
         # sharing one token makes the reviewer appear to have written the fix.
