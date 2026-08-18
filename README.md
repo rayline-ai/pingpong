@@ -171,7 +171,8 @@ docker compose exec -u git forgejo \
     --email pingpong-admin@local --random-password
 ```
 
-It prints a generated password; log in with it at <http://localhost:23000> and
+It prints a generated password; log in with it at whatever you set
+`FORGEJO_ROOT_URL` to — `localhost` only if you left `BIND_ADDR` empty — and
 Forgejo will ask you to choose a new one. Do that before minting a token —
 until the password is changed, Forgejo rejects the account's API writes with
 *"You must change your password"*, which looks like a permissions problem and is

@@ -62,9 +62,22 @@ an operator's `.env` setting, so anything this file claimed about them would be
 wrong the moment the operator changed it:
 
 ```bash
-API=<engine base URL>            # decide this per repo; ask the human once
+API=$(git config pingpong.api)   # set once per clone; see below
 curl -s --max-time 5 "$API/config"
 ```
+
+The engine's address lives in this clone's git config, **not in this file**. It
+is on a different port from Forgejo, so unlike `$FORGEJO` it cannot be derived
+from the remote — and writing it here would put a private address into a
+repository that may be pushed somewhere public, which rule 5 forbids. Git config
+is local to the clone and never travels with a push:
+
+```bash
+git config pingpong.api http://<host>:<engine port>
+```
+
+If it is unset, ask the human for the address. Do not guess it from the
+`forgejo` remote by changing the port.
 
 ```json
 {"max_rounds": 3, "max_diff_bytes": 60000, "review_timeout": 900,
