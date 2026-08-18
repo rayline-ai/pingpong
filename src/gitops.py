@@ -1,8 +1,17 @@
 """Git, all of it, on the API's side of the mount.
 
-The agents only ever see a mounted working tree. They never push, never hold a
-credential, and never learn the remote URL — so a compromised or confused agent
-cannot rewrite history or leak a token.
+The agents only ever see a mounted working tree. They never push and never learn
+the remote's credential — so a compromised or confused agent cannot rewrite
+history or leak a token.
+
+That last guarantee is the reason the token is never written into the clone.
+`git clone http://<token>@host/...` persists the authenticated URL in
+`.git/config`, and the clone lives in the work volume that *both* agents mount —
+so the remote URL is exactly as readable as any source file, including to the
+reviewer, whose read-only mount stops it writing files but not reading secrets.
+The credential is therefore passed per-invocation via `git -c http.extraHeader`
+and the stored remote URL is left clean. Same conclusion GitHub reached for
+`actions/checkout`, which now keeps the token out of `.git/config` too.
 
 Each PR gets its own clone under the work volume, so one run can never disturb
 another.
@@ -16,18 +25,45 @@ class GitError(RuntimeError):
     pass
 
 
-def run(args, cwd=None, check=True, timeout=300):
+def auth(token):
+    """Per-invocation credential for one remote operation.
+
+    Returned as `-c` overrides rather than stored config: `git -c` reaches the
+    child process through the environment and is never written to `.git/config`,
+    which is what keeps it out of the agents' reach. Note the asymmetry with
+    `git clone -c`, which *does* persist into the new repository — the override
+    has to precede the subcommand.
+    """
+    return ["http.extraHeader=Authorization: token %s" % token] if token else []
+
+
+def run(args, cwd=None, check=True, timeout=300, config=()):
+    cmd = ["git"]
+    for item in config:
+        cmd += ["-c", item]
+    cmd += args
     proc = subprocess.run(
-        ["git"] + args, cwd=cwd, capture_output=True,
+        cmd, cwd=cwd, capture_output=True,
         encoding="utf-8", errors="replace", timeout=timeout)
     if check and proc.returncode != 0:
+        # `args` only, never `cmd`: the -c overrides carry the token, and this
+        # message reaches the log and, on failure, the PR.
         raise GitError("git %s failed (%d): %s"
-                       % (" ".join(args), proc.returncode, proc.stderr.strip()[-800:]))
+                       % (" ".join(args), proc.returncode,
+                          _redact(proc.stderr.strip()[-800:])))
     return proc.stdout.strip()
 
 
-def _redact(url):
-    return re.sub(r"//[^/@]*@", "//***@", url or "")
+def _redact(text):
+    """Strip anything credential-shaped before it reaches a log or the PR.
+
+    Both forms: the `//token@host` URL an older clone may still carry, and the
+    `Authorization: token …` header the credential now travels in — git echoes
+    its argv in some error paths, and a redactor that only knew the old form
+    would leak the new one.
+    """
+    text = re.sub(r"//[^/@\s]*@", "//***@", text or "")
+    return re.sub(r"(?i)(authorization:\s*(?:token|bearer|basic)\s+)\S+", r"\1***", text)
 
 
 def slug(owner, repo, index):
@@ -36,19 +72,24 @@ def slug(owner, repo, index):
     return "%s__%s__pr%d" % (safe(owner), safe(repo), index)
 
 
-def prepare_clone(clone_url, work_root, name, branch, base, bot_name, bot_email, log=print):
+def prepare_clone(clone_url, token, work_root, name, branch, base, bot_name, bot_email,
+                  log=print):
     """Create or refresh a clone checked out at the PR's head branch.
 
-    Returns (clone_path, resolved_base_ref).
+    `clone_url` carries no credential; `token` is applied per-invocation. Returns
+    (clone_path, resolved_base_ref).
     """
     clone = os.path.join(work_root, name)
     os.makedirs(work_root, exist_ok=True)
+    creds = auth(token)
 
     if not os.path.isdir(os.path.join(clone, ".git")):
         log("cloning %s -> %s" % (_redact(clone_url), clone))
-        run(["clone", "--no-checkout", clone_url, clone], timeout=1800)
+        run(["clone", "--no-checkout", clone_url, clone], timeout=1800, config=creds)
     else:
         log("reusing existing clone %s" % clone)
+        # Also repairs a clone left by an older version that stored the token in
+        # the remote URL: whatever was there is overwritten with the clean form.
         run(["remote", "set-url", "origin", clone_url], cwd=clone)
 
     # Commits are authored by the coder bot. rounds_done() counts them by this
@@ -66,11 +107,11 @@ def prepare_clone(clone_url, work_root, name, branch, base, bot_name, bot_email,
     _write_exclude(clone)
 
     log("fetching %s" % branch)
-    run(["fetch", "--prune", "origin", branch], cwd=clone, timeout=1800)
+    run(["fetch", "--prune", "origin", branch], cwd=clone, timeout=1800, config=creds)
 
     base_remote = base.split("/", 1)[1] if base.startswith("origin/") else base
     try:
-        run(["fetch", "origin", base_remote], cwd=clone, timeout=1800)
+        run(["fetch", "origin", base_remote], cwd=clone, timeout=1800, config=creds)
     except GitError:
         log("warning: could not fetch base %r; using whatever is already local" % base)
 
@@ -151,7 +192,7 @@ def commits_ahead(repo, branch):
     return int(run(["rev-list", "--count", "origin/%s..HEAD" % branch], cwd=repo) or "0")
 
 
-def push(repo, branch, log=print):
+def push(repo, branch, token=None, log=print):
     """Fast-forward push. Never forces — the PR's history is not rewritten under
     a reviewer who may already be reading it."""
     ahead = commits_ahead(repo, branch)
@@ -159,5 +200,6 @@ def push(repo, branch, log=print):
         log("nothing to push (no new commits)")
         return False
     log("pushing %d commit(s) to origin/%s" % (ahead, branch))
-    run(["push", "origin", "%s:%s" % (branch, branch)], cwd=repo, timeout=1800)
+    run(["push", "origin", "%s:%s" % (branch, branch)], cwd=repo, timeout=1800,
+        config=auth(token))
     return True

@@ -104,8 +104,8 @@
         "router": "rayline-local"
       },
       "coder-brain": {
-        "endpoint": "rayline-cloud",
-        "model": "rayline-router",
+        "endpoint": "ollama-local",
+        "model": "qwen3.5:9b-32k",
         "router": "rayline-local"
       }
     }

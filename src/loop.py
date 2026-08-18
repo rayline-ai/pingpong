@@ -7,10 +7,28 @@ REQUEST_CHANGES review drives the next round exactly like the agent does — and
 gives the webhook-storm guard for free, because rounds are counted from the
 coder's commits, which only the coder can create.
 """
+import contextlib
 import os
 import re
 
 from . import agents, forgejo, gitops
+
+
+@contextlib.contextmanager
+def _status_on_failure(status, round_no, who):
+    """Resolve the round's commit status if the agent raises, then re-raise.
+
+    Without this an agent that times out or dies leaves `pending` on the PR
+    forever, and a stuck round becomes indistinguishable from a slow one — which
+    is the very thing the status was added to tell apart. The timeout message
+    itself is worth surfacing: it is how you learn FIX_TIMEOUT is too low for the
+    model behind the coder.
+    """
+    try:
+        yield
+    except Exception as exc:
+        status(forgejo.STATUS_ERROR, "round %d: %s failed: %s" % (round_no, who, exc))
+        raise
 
 VERDICT_RE = re.compile(r"^\s*VERDICT:\s*(APPROVE|REQUEST_CHANGES)\s*$",
                         re.IGNORECASE | re.MULTILINE)
@@ -101,6 +119,18 @@ def run_round(cfg, fj, owner, repo, index, log=print, reset=False):
     if not branch or not base:
         return {"action": "skipped", "reason": "pull request has no head/base ref"}
 
+    head_sha = (pr.get("head") or {}).get("sha")
+
+    def status(state, description):
+        """Progress, on the PR, attached to the sha this round is reading.
+
+        Every path out of run_round past this point resolves it, so a `pending`
+        left behind means the API died mid-round rather than that the round is
+        merely slow — which is the distinction a blocking round could not make.
+        """
+        if head_sha:
+            fj.set_status(owner, repo, head_sha, state, description)
+
     commits = fj.pull_commits(owner, repo, index)
     if reset:
         banked = forgejo.rounds_done(commits, cfg.bot_email)
@@ -114,6 +144,8 @@ def run_round(cfg, fj, owner, repo, index, log=print, reset=False):
     rounds = forgejo.rounds_done(commits, cfg.bot_email, baseline)
     if rounds >= cfg.max_rounds:
         log("round limit reached (%d)" % cfg.max_rounds)
+        status(forgejo.STATUS_FAILURE,
+               "stopped after %d round(s) without an approval" % rounds)
         fj.comment(owner, repo, index,
                    "PingPong stopped after %d round(s) without an approval. "
                    "Needs a human — comment `@pingpong` to run %d more."
@@ -122,17 +154,22 @@ def run_round(cfg, fj, owner, repo, index, log=print, reset=False):
 
     round_no = rounds + 1
     log("PR #%d %s -> %s, round %d/%d" % (index, branch, base, round_no, cfg.max_rounds))
+    status(forgejo.STATUS_PENDING,
+           "round %d/%d: reviewing" % (round_no, cfg.max_rounds))
 
     name = gitops.slug(owner, repo, index)
     clone, base_ref = gitops.prepare_clone(
-        # The coder's credential: this remote is what the fix is pushed over.
-        fj.clone_url(owner, repo, token=cfg.coder_token),
+        fj.clone_url(owner, repo),
+        # The coder's credential: this is what the fix is pushed over. Passed
+        # per-invocation, never stored in the clone the agents can read.
+        cfg.coder_token,
         cfg.work_root, name, branch, base,
         cfg.bot_name, cfg.bot_email, log=log)
     runs_dir = os.path.join(cfg.work_root, ".pingpong", "runs", name)
 
     changed = gitops.changed_files(clone, base_ref)
     if not changed:
+        status(forgejo.STATUS_SUCCESS, "no changes against the base")
         return {"action": "skipped", "reason": "no changes against the base"}
 
     raw_diff = gitops.diff(clone, base_ref)
@@ -152,7 +189,8 @@ def run_round(cfg, fj, owner, repo, index, log=print, reset=False):
         previous_context=_previous_context(fj, owner, repo, index))
 
     log("reviewing (%d file(s), %d bytes of diff)" % (len(changed), len(diff_text)))
-    review_text = agents.review(cfg, clone, runs_dir, review_prompt, round_no)
+    with _status_on_failure(status, round_no, "reviewer"):
+        review_text = agents.review(cfg, clone, runs_dir, review_prompt, round_no)
     verdict = parse_verdict(review_text)
 
     if verdict is None:
@@ -160,6 +198,7 @@ def run_round(cfg, fj, owner, repo, index, log=print, reset=False):
         # state, so this cannot gate a merge, and it does not become the
         # `previous_context` of the next round the way a review body would.
         log("reviewer produced no VERDICT: line — halting")
+        status(forgejo.STATUS_ERROR, "round %d: reviewer returned no verdict" % round_no)
         fj.comment(owner, repo, index, _no_verdict_note(round_no, review_text))
         return {"action": "errored", "round": round_no,
                 "reason": "reviewer produced no VERDICT: line",
@@ -171,6 +210,7 @@ def run_round(cfg, fj, owner, repo, index, log=print, reset=False):
     log("verdict: %s" % verdict)
 
     if verdict == forgejo.APPROVED:
+        status(forgejo.STATUS_SUCCESS, "approved in round %d" % round_no)
         return {"action": "approved", "round": round_no, "review": review_text}
 
     fix_prompt = render(
@@ -178,17 +218,28 @@ def run_round(cfg, fj, owner, repo, index, log=print, reset=False):
         round=round_no, max_rounds=cfg.max_rounds, worktree=clone, review=review_text)
 
     log("fixing")
-    fix_text = agents.fix(cfg, clone, runs_dir, fix_prompt, round_no)
+    # The status the whole change is for: a coder on a local model can run for
+    # many minutes, and until now nothing on the PR distinguished that from a
+    # round that had died.
+    status(forgejo.STATUS_PENDING,
+           "round %d/%d: coder running" % (round_no, cfg.max_rounds))
+    with _status_on_failure(status, round_no, "coder"):
+        fix_text = agents.fix(cfg, clone, runs_dir, fix_prompt, round_no)
 
     if not gitops.is_dirty(clone):
         log("coder changed nothing")
+        status(forgejo.STATUS_FAILURE,
+               "round %d: changes requested but the coder made no edits" % round_no)
         fj.comment(owner, repo, index,
                    "PingPong round %d: changes were requested but the coder "
                    "made no edits. Needs a human.\n\n%s" % (round_no, fix_text))
         return {"action": "stalled", "round": round_no, "reason": "no edits"}
 
     sha = gitops.commit_all(clone, _commit_message(round_no, fix_text))
-    pushed = gitops.push(clone, branch, log=log)
+    # Resolved before the push, not after: the push fires the webhook that starts
+    # the next round, and that round sets its own pending status on the new sha.
+    status(forgejo.STATUS_SUCCESS, "round %d: changes pushed" % round_no)
+    pushed = gitops.push(clone, branch, token=cfg.coder_token, log=log)
     return {"action": "fixed", "round": round_no, "sha": sha, "pushed": pushed,
             "review": review_text, "fix": fix_text}
 

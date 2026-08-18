@@ -24,6 +24,22 @@ _PR_LOCKS_GUARD = threading.Lock()
 
 TRIGGER_ACTIONS = {"opened", "reopened", "synchronize", "synchronized"}
 
+# Forgejo does not send one `pull_request_review` event with the state in the
+# body — it encodes the state in the event *name*, and calls the action
+# "reviewed". Observed on Forgejo 11:
+#     X-Forgejo-Event: pull_request_rejected   action: reviewed
+# `pull_request_review` is kept because that is what GitHub sends, and the state
+# then has to come from the payload instead.
+REVIEW_EVENTS = {
+    "pull_request_review",
+    "pull_request_rejected", "pull_request_review_rejected",
+    "pull_request_approved", "pull_request_review_approved",
+}
+# The subset meaning "changes are requested". Anything else — an approval, a
+# review comment — is not a trigger.
+REVIEW_REJECTED_EVENTS = {"pull_request_rejected", "pull_request_review_rejected"}
+REJECTED_STATES = {"requestchanges", "rejected"}
+
 # A human asking for another run. Any of the three bot names works, because
 # Forgejo's mention autocomplete offers whichever ones are collaborators and
 # nobody should have to remember which. Matched as literal text — Forgejo has no
@@ -48,6 +64,19 @@ def verify(secret, signature, body):
     return hmac.compare_digest(expected, signature.strip())
 
 
+def is_own_account(sender, bot_name, bot_logins=()):
+    """Was this delivery caused by one of PingPong's own accounts?
+
+    Asked once, of identity, rather than re-derived per event type. GitHub
+    settles the same question the same way — anything done with the workflow's
+    own token does not start a workflow run — and the reason is that a filter
+    spelled out per event is a filter that will be right in one branch and wrong
+    in another. It already was: the review branch compared only `bot_name`
+    (the *coder*), so the reviewer's own REQUEST_CHANGES was never excluded.
+    """
+    return bool(sender) and (sender == bot_name or sender in bot_logins)
+
+
 def should_run(event, payload, bot_name, bot_logins=()):
     """Decide whether this delivery is a round trigger.
 
@@ -59,6 +88,12 @@ def should_run(event, payload, bot_name, bot_logins=()):
     if event == "pull_request":
         if action not in TRIGGER_ACTIONS:
             return False, "pull_request action %r is not a trigger" % action
+        # Deliberately not filtered by sender, unlike every other event below.
+        # The coder's own push is the loop's forward edge — the whole design is
+        # that a round ends by pushing and the push starts the next one. What
+        # bounds it is MAX_ROUNDS, counted from the coder's commits, not an
+        # identity check. This is where PingPong departs from GitHub, which has
+        # no loop to sustain.
         return True, "pull_request %s" % action
 
     if event == "issue_comment":
@@ -68,26 +103,27 @@ def should_run(event, payload, bot_name, bot_logins=()):
         # an empty object is still a pull request.
         if (payload.get("issue") or {}).get("pull_request") is None:
             return False, "comment is on an issue, not a pull request"
-        body = ((payload.get("comment") or {}).get("body") or "")
         # The marker the reset itself posts contains no mention, but a bot could
         # still quote one — checking the sender keeps that from looping.
-        if sender == bot_name or sender in bot_logins:
-            return False, "comment by the bot itself"
-        if COMMAND_MENTION not in body.lower():
+        if is_own_account(sender, bot_name, bot_logins):
+            return False, "comment by one of PingPong's own accounts"
+        if COMMAND_MENTION not in ((payload.get("comment") or {}).get("body") or "").lower():
             return False, "comment is not a command"
         return True, COMMAND_REASON
 
-    if event == "pull_request_review":
-        # A human asking for changes should drive a round the same way the agent
-        # reviewer does. The bot's own review must not, or every round would
-        # trigger the next one twice.
-        if sender == bot_name:
-            return False, "review by the bot itself"
+    if event in REVIEW_EVENTS:
+        # A human asking for changes drives a round the same way the agent
+        # reviewer does. PingPong's own review must not: the round that posted it
+        # is already going on to run the coder, so letting it through would run a
+        # second review of the same unchanged diff — which is exactly the
+        # duplicate review this used to produce.
+        if is_own_account(sender, bot_name, bot_logins):
+            return False, "review by one of PingPong's own accounts"
         state = ((payload.get("review") or {}).get("type")
                  or (payload.get("review") or {}).get("state") or "").lower()
-        if state.replace("_", "") in ("requestchanges", "rejected"):
+        if event in REVIEW_REJECTED_EVENTS or state.replace("_", "") in REJECTED_STATES:
             return True, "human requested changes"
-        return False, "review state %r is not a trigger" % state
+        return False, "review %r/%r is not a trigger" % (event, state)
 
     return False, "event %r is not handled" % event
 
@@ -176,6 +212,11 @@ class Handler(BaseHTTPRequestHandler):
         run, reason = should_run(event, payload, self.cfg.bot_name,
                                  (self.cfg.reviewer_login, self.cfg.coder_login))
         if not run:
+            # Logged, not just answered: an ignored delivery is the single
+            # hardest failure to diagnose, because a trigger that silently does
+            # not fire looks exactly like a webhook that never arrived.
+            log("ignored delivery: event=%r action=%r: %s"
+                % (event, (payload.get("action") or ""), reason))
             self._reply(202, "ignored: %s" % reason)
             return
 

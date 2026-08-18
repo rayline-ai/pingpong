@@ -8,7 +8,7 @@ import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from src import forgejo, loop  # noqa: E402
+from src import forgejo, gitops, loop  # noqa: E402
 from src import webhook  # noqa: E402
 
 
@@ -133,6 +133,93 @@ class TestWebhookTriggers(unittest.TestCase):
             {"action": "reviewed", "review": {"type": "approved"},
              "sender": {"login": "alice"}}, "bot")
         self.assertFalse(run)
+
+
+class TestForgejoReviewEventNames(unittest.TestCase):
+    """The event names Forgejo actually sends, captured from a live delivery.
+
+    The tests above use `pull_request_review`, which is GitHub's name. Forgejo
+    encodes the state in the event name and calls the action "reviewed":
+
+        X-Forgejo-Event: pull_request_rejected      action: reviewed
+
+    Nothing matched that, so the whole branch was dead and a human's
+    REQUEST_CHANGES silently never drove a round — while the tests passed,
+    because they asserted the name PingPong expected rather than the one that
+    arrives.
+    """
+
+    BOTS = ("pingpong-reviewer", "pingpong-coder")
+
+    def _run(self, event, sender, review=None):
+        return webhook.should_run(
+            event,
+            {"action": "reviewed", "review": review or {},
+             "sender": {"login": sender}},
+            "pingpong-coder", self.BOTS)
+
+    def test_a_humans_rejection_triggers(self):
+        run, _ = self._run("pull_request_rejected", "alice")
+        self.assertTrue(run)
+
+    def test_the_reviewer_bots_own_rejection_does_not(self):
+        # The regression that produced duplicate reviews: the round that posted
+        # this review is already running the coder, so letting it back in would
+        # review the same unchanged diff twice. It was not caught before because
+        # the branch compared the sender against the *coder's* name only.
+        run, reason = self._run("pull_request_rejected", "pingpong-reviewer")
+        self.assertFalse(run, reason)
+
+    def test_the_coder_bots_own_rejection_does_not(self):
+        run, _ = self._run("pull_request_rejected", "pingpong-coder")
+        self.assertFalse(run)
+
+    def test_an_approval_does_not_trigger(self):
+        run, _ = self._run("pull_request_approved", "alice")
+        self.assertFalse(run)
+
+    def test_githubs_name_still_works(self):
+        run, _ = self._run("pull_request_review", "alice", {"type": "request_changes"})
+        self.assertTrue(run)
+
+    def test_the_coders_push_still_triggers_despite_being_a_bot(self):
+        # Identity filtering deliberately stops at `pull_request`: the coder's
+        # push is the loop's forward edge. MAX_ROUNDS bounds it, not the sender.
+        run, _ = webhook.should_run(
+            "pull_request", {"action": "synchronized",
+                             "sender": {"login": "pingpong-coder"}},
+            "pingpong-coder", self.BOTS)
+        self.assertTrue(run)
+
+
+class TestCloneUrlCarriesNoCredential(unittest.TestCase):
+    """`git clone http://<token>@host/…` writes the token into `.git/config`.
+
+    That file lives in the work volume both agents mount, so the coder's token
+    was readable by the reviewer — whose read-only mount stops it writing files
+    but not reading secrets. Verified live before the fix: the reviewer container
+    could authenticate to the Forgejo API as pingpong-coder.
+    """
+
+    def test_url_has_no_userinfo(self):
+        fj = forgejo.Forgejo("http://forgejo:3000", "sekrit-token")
+        url = fj.clone_url("alice", "demo")
+        self.assertEqual(url, "http://forgejo:3000/alice/demo.git")
+        self.assertNotIn("sekrit-token", url)
+        self.assertNotIn("@", url)
+
+    def test_auth_is_a_per_invocation_override(self):
+        self.assertEqual(gitops.auth("sekrit-token"),
+                         ["http.extraHeader=Authorization: token sekrit-token"])
+
+    def test_no_token_means_no_override(self):
+        self.assertEqual(gitops.auth(""), [])
+
+    def test_git_errors_redact_both_credential_forms(self):
+        old = gitops._redact("fatal: http://abc123@forgejo:3000/a/b.git not found")
+        self.assertNotIn("abc123", old)
+        new = gitops._redact("fatal: extraHeader 'Authorization: token abc123' rejected")
+        self.assertNotIn("abc123", new)
 
 
 class TestSignature(unittest.TestCase):
@@ -272,10 +359,16 @@ class _FakeForgejo:
     def __init__(self):
         self.comments = []
         self.created_reviews = []
+        self.statuses = []
 
     def pull_request(self, *a):
+        # `sha` matters: run_round reports progress against the head commit, so
+        # omitting it here would silently disable every status assertion below.
         return {"state": "open", "merged": False, "title": "t", "body": "b",
-                "head": {"ref": "feature"}, "base": {"ref": "main"}}
+                "head": {"ref": "feature", "sha": "deadbeef"}, "base": {"ref": "main"}}
+
+    def set_status(self, owner, repo, sha, state, description, context=None):
+        self.statuses.append((state, description))
 
     def pull_commits(self, *a):
         return []
@@ -286,7 +379,7 @@ class _FakeForgejo:
     def issue_comments(self, *a):
         return [{"body": body} for body in self.comments]
 
-    def clone_url(self, owner, repo, token=None):
+    def clone_url(self, owner, repo):
         return "http://example.invalid/%s/%s.git" % (owner, repo)
 
     def comment(self, owner, repo, index, body):
@@ -348,6 +441,110 @@ class TestRunRoundOnBrokenRuntime(unittest.TestCase):
 
         self.assertEqual(self.fj.created_reviews[0][0], forgejo.REQUEST_CHANGES)
         self.assertEqual(self.calls, ["fix"])
+
+
+class TestRoundStatus(unittest.TestCase):
+    """Progress is reported as a commit status, and always resolved.
+
+    A round holds a thread for as long as the coder takes — up to FIX_TIMEOUT,
+    now 30 minutes. Without this the PR showed nothing at all between the review
+    and the push, so a slow local model was indistinguishable from a dead one.
+    """
+
+    def setUp(self):
+        self.fj = _FakeForgejo()
+        self._saved = (loop.gitops.prepare_clone, loop.gitops.changed_files,
+                       loop.gitops.diff, loop.gitops.is_dirty,
+                       loop.gitops.commit_all, loop.gitops.push,
+                       loop.agents.review, loop.agents.fix)
+        loop.gitops.prepare_clone = lambda *a, **k: ("/tmp/clone", "origin/main")
+        loop.gitops.changed_files = lambda *a, **k: ["discount.py"]
+        loop.gitops.diff = lambda *a, **k: "+ some change"
+        loop.gitops.is_dirty = lambda *a, **k: True
+        loop.gitops.commit_all = lambda *a, **k: "cafe1234"
+        loop.gitops.push = lambda *a, **k: True
+        loop.agents.fix = lambda *a, **k: "Fixed\n\n- did the thing"
+
+    def tearDown(self):
+        (loop.gitops.prepare_clone, loop.gitops.changed_files, loop.gitops.diff,
+         loop.gitops.is_dirty, loop.gitops.commit_all, loop.gitops.push,
+         loop.agents.review, loop.agents.fix) = self._saved
+
+    def states(self):
+        return [state for state, _ in self.fj.statuses]
+
+    def test_approval_resolves_pending_to_success(self):
+        loop.agents.review = lambda *a, **k: "Looks good.\n\nVERDICT: APPROVE"
+        loop.run_round(_Cfg(), self.fj, "o", "r", 1, log=lambda m: None)
+
+        self.assertEqual(self.states(), [forgejo.STATUS_PENDING, forgejo.STATUS_SUCCESS])
+
+    def test_the_coder_leg_is_announced_before_it_starts(self):
+        loop.agents.review = lambda *a, **k: "Nope.\n\nVERDICT: REQUEST_CHANGES"
+        loop.run_round(_Cfg(), self.fj, "o", "r", 1, log=lambda m: None)
+
+        # reviewing -> coder running -> pushed
+        self.assertEqual(self.states(), [forgejo.STATUS_PENDING,
+                                         forgejo.STATUS_PENDING,
+                                         forgejo.STATUS_SUCCESS])
+        self.assertIn("coder running", self.fj.statuses[1][1])
+
+    def test_a_timed_out_coder_does_not_strand_pending(self):
+        # The failure the 30-minute ceiling still permits. A stranded `pending`
+        # would mean "slow" forever, which is precisely the state the status is
+        # there to rule out.
+        def boom(*a, **k):
+            raise loop.agents.AgentError("pingpong-coder timed out after 1800s")
+
+        loop.agents.review = lambda *a, **k: "Nope.\n\nVERDICT: REQUEST_CHANGES"
+        loop.agents.fix = boom
+
+        with self.assertRaises(loop.agents.AgentError):
+            loop.run_round(_Cfg(), self.fj, "o", "r", 1, log=lambda m: None)
+
+        self.assertEqual(self.states()[-1], forgejo.STATUS_ERROR)
+        self.assertIn("timed out", self.fj.statuses[-1][1])
+
+    def test_a_failed_reviewer_does_not_strand_pending(self):
+        def boom(*a, **k):
+            raise loop.agents.AgentError("pingpong-reviewer returned no output")
+
+        loop.agents.review = boom
+        with self.assertRaises(loop.agents.AgentError):
+            loop.run_round(_Cfg(), self.fj, "o", "r", 1, log=lambda m: None)
+
+        self.assertEqual(self.states()[-1], forgejo.STATUS_ERROR)
+
+
+class TestStatusIsBestEffort(unittest.TestCase):
+    """Reporting progress must never be able to fail a round.
+
+    Exercises the real client rather than the fake: the swallow lives in
+    Forgejo.set_status, so a test that raises from a stub would only be asserting
+    something about the stub.
+    """
+
+    def setUp(self):
+        self.fj = forgejo.Forgejo("http://forgejo:3000", "tok")
+
+    def test_a_forge_without_the_endpoint_is_tolerated(self):
+        def refuse(*a, **k):
+            raise forgejo.ForgejoError("POST /statuses -> 404: not found")
+
+        self.fj._request = refuse
+        self.assertIsNone(
+            self.fj.set_status("o", "r", "sha", forgejo.STATUS_PENDING, "reviewing"))
+
+    def test_an_unknown_state_is_still_a_bug(self):
+        # Not swallowed: a typo'd state is PingPong's error, not the forge's.
+        with self.assertRaises(forgejo.ForgejoError):
+            self.fj.set_status("o", "r", "sha", "in_progress", "reviewing")
+
+    def test_long_descriptions_are_truncated(self):
+        seen = {}
+        self.fj._request = lambda m, p, payload=None: seen.update(payload) or {}
+        self.fj.set_status("o", "r", "sha", forgejo.STATUS_ERROR, "x" * 500)
+        self.assertLessEqual(len(seen["description"]), 255)
 
 
 class TestCommentCommand(unittest.TestCase):
