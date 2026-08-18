@@ -277,13 +277,22 @@ not one. Then, in Forgejo:
    ```bash
    docker compose exec -u git forgejo forgejo admin user generate-access-token \
        --username <them> --token-name workstation --raw \
-       --scopes write:repository,read:user
+       --scopes write:repository,write:user,read:user
    ```
 
-   Those two scopes are exactly what the template's own commands need and
-   nothing more: `write:repository` to push and to `POST` a pull request,
-   `read:user` for the identity checks against `/api/v1/user` and
-   `/api/v1/user/emails`.
+   `write:repository` pushes and `POST`s a pull request, `read:user` answers the
+   template's identity checks against `/api/v1/user` and `/api/v1/user/emails`.
+   `write:user` is there for one call and one only — creating a repository, in
+   step 4 — and it is on this token rather than on a second one because step 4
+   repeats for every repository you ever add, and a token minted per repository
+   is a token you cannot revoke per repository. Better one credential you know
+   the whereabouts of than a growing set of forgotten ones.
+
+   Know what it widens: `write:user` also rewrites the account's email addresses
+   and SSH keys, and this token lives in plaintext in `~/.netrc`, so whatever
+   reaches that workstation reaches those too. Creating repositories in Forgejo's
+   UI needs no token at all — if that is the trade you want, drop `write:user`
+   here and take the UI route in step 4.
 
    **Do not infer a scope from the endpoint's path.** Each endpoint declares its
    own, and neither direction of the obvious guess holds: creating a repository
@@ -293,12 +302,21 @@ not one. Then, in Forgejo:
    above carry `write:issue` at all. When a call is refused, the `403` names the
    scope it wanted; read it rather than widening the token by guesswork.
 
-   Mint narrowly, because you cannot clean up afterwards from here: Forgejo's
-   `DELETE /users/{username}/tokens/{id}` refuses token auth and answers
-   `401 auth method not allowed`. Revoking needs basic auth with the account
-   password, so only the person themselves can do it, in Settings →
-   Applications. A token minted from this CLI is one you are stuck with until
-   they remove it.
+   Mint once, and get the scopes right at that moment: you cannot clean up
+   afterwards from here. Forgejo's `DELETE /users/{username}/tokens/{id}` refuses
+   token auth and answers `401 auth method not allowed`. Revoking needs basic
+   auth with the account password, so only the person themselves can do it, in
+   Settings → Applications. A token minted from this CLI is one you are stuck
+   with until they remove it — which is the argument for one token per person
+   carrying what that person's work needs, rather than a fresh one each time a
+   call turns out to be refused.
+
+   Scopes cannot be widened after the fact, so an account minted before this
+   list changed — or one refused for a scope you now know it needs — gets a
+   **replacement**: run the same command again, put the new token in `~/.netrc`,
+   and tell the owner to delete the stale one in Settings → Applications. That
+   is not the accumulation warned about above. One token superseding another is
+   a cleanup with a known end; one token per repository is not.
 
    **These accounts own the repositories and open the pull requests.** Not
    `pingpong-admin`, and never the two bot accounts — Forgejo refuses to let an
@@ -333,15 +351,14 @@ not one. Then, in Forgejo:
    its own, and pushing real history into it is then a non-fast-forward that
    fails for a reason that reads as a permissions problem.
 
-   That one call wants **both `write:user` and `write:repository`** — a token
-   holding only one of them is refused, naming the other. The workstation token
-   from step 2 is deliberately narrower, so you have a choice: create the
-   repository in the UI, where no token is involved at all, or mint a second
-   token `--scopes write:user,write:repository` for this single call. Prefer the
-   UI. A `write:user` token can also rewrite the account's email addresses and
-   SSH keys, and per step 2 you cannot revoke it from the CLI once it exists.
+   That call wants **both `write:user` and `write:repository`** — a token holding
+   only one of them is refused, naming the other. It is the only reason step 2
+   mints `write:user` at all, and with it there the call goes through
+   unattended. If you chose to leave `write:user` off, this is the point where
+   you create the repository in the UI instead; everything after it works with
+   the narrow token.
 
-   Collaborators sit under `/api/v1/repos/`, so the workstation token is enough:
+   Collaborators sit under `/api/v1/repos/` and need only `write:repository`:
 
    ```bash
    for u in pingpong-reviewer pingpong-coder; do
@@ -351,25 +368,32 @@ not one. Then, in Forgejo:
    done
    ```
 
-   Then point the folder at the instance and seed the base branch. `main` has to
-   exist before any PR can be opened against it:
-
-   ```bash
-   git remote add forgejo "$F/$OWNER/$REPO.git"
-   git push forgejo HEAD:refs/heads/main
-   git config pingpong.api http://<host>:<API_PORT>
-   ```
-
-   The remote URL carries no credential and the engine's address stays in git
-   config rather than in the repository — both are rules the reviewed repo's
-   `AGENTS.md` states and expects to hold. The credential comes from `~/.netrc`:
+   Then point the folder at the instance and seed the base branch. The push
+   needs a credential and takes it from `~/.netrc`, so write that first:
 
    ```
    machine <host> login <them> password <their token>
    ```
 
    Host only, no port — that one entry serves `git push forgejo` and `curl -n`
-   against both Forgejo and the engine.
+   against both Forgejo and the engine. Then, in the folder itself. `main` has to
+   exist before any PR can be opened against it:
+
+   ```bash
+   git remote add forgejo "$F/$OWNER/$REPO.git" \
+       || git remote set-url forgejo "$F/$OWNER/$REPO.git"
+   git push forgejo HEAD:refs/heads/main
+   git config pingpong.api http://<host>:<API_PORT>
+   ```
+
+   `remote add` fails rather than overwrites if a `forgejo` remote is already
+   there — from an earlier instance, or an earlier attempt at this one — and a
+   stale URL is the kind of leftover that makes the push fail as if the
+   repository were missing.
+
+   The remote URL carries no credential and the engine's address stays in git
+   config rather than in the repository — both are rules the reviewed repo's
+   `AGENTS.md` states and expects to hold.
 5. Copy `templates/AGENTS.md` into that repository and edit the places it marks
    *decide this per repo*. It is what tells whoever works there how to drive the
    loop; without it they have a forge with two bots on it and no way to know
@@ -394,9 +418,14 @@ not one. Then, in Forgejo:
    delivery it ignores, and why — a trigger that silently does not fire looks
    exactly like a webhook that never arrived.
 
-   The same thing over the API, continuing the folder path from step 4:
+   The same thing over the API, continuing the folder path from step 4. The
+   secret is the one from step 3, which lives in `.env` and in no shell you have
+   open — read it in rather than typing it, and check it arrived:
 
    ```bash
+   set -a; . ./.env; set +a
+   test -n "$PINGPONG_WEBHOOK_SECRET" || echo 'empty — do not create the hook'
+
    curl -s -X POST "$F/api/v1/repos/$OWNER/$REPO/hooks" -H "$AUTH" \
        -H 'Content-Type: application/json' \
        -d '{"type":"forgejo","active":true,
@@ -404,6 +433,11 @@ not one. Then, in Forgejo:
             "config":{"url":"http://api:8080/webhook","content_type":"json",
                       "secret":"'"$PINGPONG_WEBHOOK_SECRET"'"}}'
    ```
+
+   An unset variable there is the worst outcome available: it expands to
+   `"secret":""`, Forgejo answers `201`, and every delivery afterwards fails the
+   signature check. You get a webhook that exists, looks right in the UI, and
+   never triggers a round.
 
    Read the hook back and the event list is longer than the one you sent:
    Forgejo stores `pull_request_review` expanded into its `_approved`,

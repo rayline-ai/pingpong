@@ -46,11 +46,20 @@ git remote add forgejo http://<host>:<port>/<owner>/<repo>.git
 ```
 
 A missing remote may also mean this repository has never been put on the
-instance at all. Adding it is not something you can do from here — it needs the
-bot accounts added as collaborators and a webhook registered, both with a
-credential you do not hold. Say that it is missing and let the operator run
-step 4 of the PingPong README; a remote pointing at a repository that does not
-exist fails later and less clearly than one that is absent.
+instance at all. Check before adding one — a remote pointing at a repository
+that does not exist fails later, and less clearly, than one that is absent:
+
+```bash
+curl -n -s -o /dev/null -w '%{http_code}\n' --max-time 5 \
+    "<instance>/api/v1/repos/<owner>/<repo>"
+```
+
+`404` means it still has to be created, the bot accounts added as collaborators
+and a webhook registered — steps 4 and 6 of the PingPong README, all of it over
+the API with the token already in `~/.netrc`. Creating the repository is the one
+call that may be refused: it needs `write:user`, which a narrowly minted token
+does not carry. Attempt it, and if a `403` comes back, report the scope it names
+rather than guessing a remote into place.
 
 Credentials live in `~/.netrc`, never in this repo:
 
