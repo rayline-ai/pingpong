@@ -130,16 +130,23 @@ accounts and tokens that can only be minted once Forgejo has booted, which is wh
 this is two passes.
 
 Self-registration is off (`DISABLE_REGISTRATION` in `docker-compose.yml`), so the
-first account is made with Forgejo's own CLI rather than through the sign-up page:
+first account is made with Forgejo's own CLI rather than through the sign-up page.
+Call it `pingpong-admin`. It is the human side of the setup: it owns the
+repositories and opens the pull requests, which the two bot accounts below
+deliberately never do — Forgejo refuses to let an account review its own PR, so a
+bot-authored PR is silently never reviewed:
 
 ```bash
 docker compose exec -u git forgejo \
-    forgejo admin user create --admin --username you --email you@example.com \
-    --random-password
+    forgejo admin user create --admin --username pingpong-admin \
+    --email pingpong-admin@local --random-password
 ```
 
 It prints a generated password; log in with it at <http://localhost:3000> and
-Forgejo will ask you to choose a new one. Then, in Forgejo:
+Forgejo will ask you to choose a new one. Do that before minting a token —
+until the password is changed, Forgejo rejects the account's API writes with
+*"You must change your password"*, which looks like a permissions problem and is
+not one. Then, in Forgejo:
 
 1. Create **two** bot accounts, `pingpong-reviewer` and `pingpong-coder`, and put a
    token from each into `.env` as `FORGEJO_REVIEWER_TOKEN` and
