@@ -29,8 +29,8 @@ services:
       # first *registered* account, and there will not be one. Create it with
       # the CLI instead (see README "Setup"):
       #   docker compose exec -u git forgejo \
-      #       forgejo admin user create --admin --username you \
-      #       --email you@example.com --random-password
+      #       forgejo admin user create --admin --username pingpong-admin \
+      #       --email pingpong-admin@local --random-password
       FORGEJO__service__DISABLE_REGISTRATION: "true"
       # Without these Forgejo boots to its interactive installer and the API
       # cannot reach the API surface at all.
@@ -73,6 +73,13 @@ services:
       PINGPONG_WEBHOOK_SECRET: ${PINGPONG_WEBHOOK_SECRET:-}
       REVIEWER_CONTAINER: pingpong-reviewer
       CODER_CONTAINER: pingpong-coder
+      # The two bots' Forgejo logins, which default to the container names above
+      # because they normally match. They are what excludes the bots' own events
+      # from starting a round, so if the accounts were named differently these
+      # must say so — otherwise the check compares against a login that does not
+      # exist and the loop triggers on itself.
+      REVIEWER_LOGIN: ${REVIEWER_LOGIN:-pingpong-reviewer}
+      CODER_LOGIN: ${CODER_LOGIN:-pingpong-coder}
       MAX_ROUNDS: ${MAX_ROUNDS:-3}
       MAX_DIFF_BYTES: ${MAX_DIFF_BYTES:-60000}
       REVIEW_TIMEOUT: ${REVIEW_TIMEOUT:-900}

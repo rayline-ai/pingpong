@@ -113,6 +113,7 @@ src/gitops.py             all git, on the API's side of the mount
 src/agents.py             `docker exec hermes -z` — knows nothing about models
 onboard.sh                setup step 4; host-side, so it can see your folder
 templates/AGENTS.md       instructions to copy into a repository under review
+watch.sh                  a test aid, not part of the system: live round progress
 ```
 
 ## Setup
