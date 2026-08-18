@@ -55,11 +55,17 @@ curl -n -s -o /dev/null -w '%{http_code}\n' --max-time 5 \
 ```
 
 `404` means it still has to be created, the bot accounts added as collaborators
-and a webhook registered — steps 4 and 6 of the PingPong README, all of it over
-the API with the token already in `~/.netrc`. Creating the repository is the one
-call that may be refused: it needs `write:user`, which a narrowly minted token
-does not carry. Attempt it, and if a `403` comes back, report the scope it names
-rather than guessing a remote into place.
+and a webhook registered. That is one command on the machine running PingPong,
+and it is idempotent, so a half-finished attempt is safe to repeat:
+
+```bash
+./pingpong onboard <path to this repository>
+```
+
+Whether you can run it yourself is the per-repo question at the top of this file.
+If PingPong is elsewhere, say the repository is not on the instance and name that
+command — do not guess a remote into place, and do not build the same thing out
+of `curl` calls, which is where the scope and ordering traps it handles live.
 
 Credentials live in `~/.netrc`, never in this repo:
 

@@ -111,6 +111,7 @@ src/loop.py               one round
 src/forgejo.py            PR reads, review events, round counting
 src/gitops.py             all git, on the API's side of the mount
 src/agents.py             `docker exec hermes -z` — knows nothing about models
+onboard.sh                setup step 4; host-side, so it can see your folder
 templates/AGENTS.md       instructions to copy into a repository under review
 ```
 
@@ -323,92 +324,65 @@ not one. Then, in Forgejo:
    account review its own PR, so a PR authored by the reviewer or the coder is
    silently never reviewed.
 3. Set `PINGPONG_WEBHOOK_SECRET` to any long random string.
-4. **Create a repository, owned by a person's account**, and add
-   `pingpong-reviewer` and `pingpong-coder` to it as collaborators with
-   **write** — Settings → Collaborators. Without write the reviewer cannot post
-   a review and the coder cannot push, and the round fails partway rather than
-   at the start.
+4. **Put a repository on the instance**, owned by a person's account. One
+   command, run from this directory:
+
+   ```bash
+   ./pingpong onboard ../some-repo
+   ```
+
+   It creates the repository under the account whose email that folder commits
+   with, adds `pingpong-reviewer` and `pingpong-coder` as collaborators with
+   **write**, mints the owner a token if `~/.netrc` has none — or replaces one
+   the create call refuses for scope — pushes `HEAD` to `main`, sets
+   `pingpong.api`, copies `templates/AGENTS.md` in, and registers the webhook.
+   Every step checks the instance first and reports `already` rather than
+   failing, so a run interrupted halfway is repeated rather than unpicked.
+
+   That is a script rather than a list of steps here because most of what this
+   step knows is conditional — which scope a call needs, what order the
+   credential and the push go in, whether the folder was ever pointed at an
+   instance before. Prose cannot check any of it, and every one of those
+   failures is a quiet one.
 
    Everything from here is per repository, and repeats for each one you add.
 
-   **Onboarding a folder that already has history** — the usual case, since a
-   repository worth reviewing normally exists before the instance does — is the
-   same step done over the API. Forgejo's admin CLI cannot help: it manages
-   accounts and nothing else, so there is no `forgejo admin repo create`. Work
-   as the owning person, with the token from step 2:
+   Four things it does that are worth knowing anyway, because they are what
+   costs time when this goes wrong elsewhere:
 
-   ```bash
-   F=http://<host>:<FORGEJO_PORT>       # your FORGEJO_ROOT_URL, without the trailing /
-   OWNER=<them>; REPO=<name>; TOKEN=<their token>
-   AUTH="Authorization: token $TOKEN"
-
-   curl -s -X POST "$F/api/v1/user/repos" -H "$AUTH" \
-       -H 'Content-Type: application/json' \
-       -d "{\"name\":\"$REPO\",\"auto_init\":false,\"default_branch\":\"main\"}"
-   ```
-
-   Keep `auto_init` false. An initialised repository already holds a commit of
-   its own, and pushing real history into it is then a non-fast-forward that
-   fails for a reason that reads as a permissions problem.
-
-   That call wants **both `write:user` and `write:repository`** — a token holding
-   only one of them is refused, naming the other. It is the only reason step 2
-   mints `write:user` at all, and with it there the call goes through
-   unattended. If you chose to leave `write:user` off, this is the point where
-   you create the repository in the UI instead; everything after it works with
-   the narrow token.
-
-   Collaborators sit under `/api/v1/repos/` and need only `write:repository`:
-
-   ```bash
-   for u in pingpong-reviewer pingpong-coder; do
-       curl -s -X PUT "$F/api/v1/repos/$OWNER/$REPO/collaborators/$u" \
-           -H "$AUTH" -H 'Content-Type: application/json' \
-           -d '{"permission":"write"}'
-   done
-   ```
-
-   Then point the folder at the instance and seed the base branch. The push
-   needs a credential and takes it from `~/.netrc`, so write that first:
-
-   ```
-   machine <host> login <them> password <their token>
-   ```
-
-   Host only, no port — that one entry serves `git push forgejo` and `curl -n`
-   against both Forgejo and the engine. Then, in the folder itself. `main` has to
-   exist before any PR can be opened against it:
-
-   ```bash
-   git remote add forgejo "$F/$OWNER/$REPO.git" \
-       || git remote set-url forgejo "$F/$OWNER/$REPO.git"
-   git push forgejo HEAD:refs/heads/main
-   git config pingpong.api http://<host>:<API_PORT>
-   ```
-
-   `remote add` fails rather than overwrites if a `forgejo` remote is already
-   there — from an earlier instance, or an earlier attempt at this one — and a
-   stale URL is the kind of leftover that makes the push fail as if the
-   repository were missing.
-
-   The remote URL carries no credential and the engine's address stays in git
-   config rather than in the repository — both are rules the reviewed repo's
-   `AGENTS.md` states and expects to hold.
-5. Copy `templates/AGENTS.md` into that repository and edit the places it marks
-   *decide this per repo*. It is what tells whoever works there how to drive the
-   loop; without it they have a forge with two bots on it and no way to know
-   what any of it means.
-6. Add a repository webhook: `http://api:8080/webhook`, content type JSON, the
-   same secret, events **Pull Request**, **Pull Request Review** and **Issue
-   Comment** (the last is what `@pingpong` needs).
+   - **The bots need write.** Without it the reviewer cannot post a review and
+     the coder cannot push, and the round fails partway rather than at the start.
+   - **The hook's secret must be non-empty.** With an empty one Forgejo answers
+     `201`, the hook looks correct in the UI, and every delivery afterwards fails
+     its signature check. `onboard` refuses to create it rather than leave you a
+     webhook that exists and never fires.
+   - **`main` has to exist before a PR can be opened against it**, which is why
+     the folder's `HEAD` goes there first — and why the repository is created
+     with `auto_init` false. An initialised repository already holds a commit of
+     its own, and pushing real history at it is then a non-fast-forward that
+     fails for a reason that reads as a permissions problem.
+   - **No credential in the remote URL, and the engine's address in git config
+     rather than in the repository.** Both are rules the reviewed repo's
+     `AGENTS.md` states and expects to hold. The credential comes from
+     `~/.netrc`, host only and no port, and that one entry serves both
+     `git push forgejo` and `curl -n` against Forgejo and the engine.
+   **Doing it in the UI instead:** create the repository, add the two
+   collaborators under Settings → Collaborators, and add a webhook pointing at
+   `http://api:8080/webhook`, content type JSON, the same secret, events **Pull
+   Request**, **Pull Request Review** and **Issue Comment** — the last is what
+   `@pingpong` needs.
 
    That is `8080`, not `API_PORT`, and it is not a typo. Forgejo calls the
    engine from inside the compose network, where the service still listens on
    its own port — the published one exists only for you.
 
-   Forgejo does not send one `pull_request_review` event with the state in the
-   body the way GitHub does — it puts the state in the event name and calls the
-   action `reviewed`:
+   Read the hook back afterwards and its event list is longer than the three you
+   checked: Forgejo stores `pull_request_review` expanded into its `_approved`,
+   `_rejected` and `_comment` variants, and `pull_request` into `_sync`,
+   `_assign` and the rest. That expansion is why those are the event names that
+   actually arrive — and it does not send one `pull_request_review` event with
+   the state in the body the way GitHub does. The state is in the event name and
+   the action is `reviewed`:
 
    ```
    X-Forgejo-Event: pull_request_rejected      action: reviewed
@@ -417,34 +391,11 @@ not one. Then, in Forgejo:
    Both spellings are accepted. `pingpong logs` names the event of every
    delivery it ignores, and why — a trigger that silently does not fire looks
    exactly like a webhook that never arrived.
-
-   The same thing over the API, continuing the folder path from step 4. The
-   secret is the one from step 3, which lives in `.env` and in no shell you have
-   open — read it in rather than typing it, and check it arrived:
-
-   ```bash
-   set -a; . ./.env; set +a
-   test -n "$PINGPONG_WEBHOOK_SECRET" || echo 'empty — do not create the hook'
-
-   curl -s -X POST "$F/api/v1/repos/$OWNER/$REPO/hooks" -H "$AUTH" \
-       -H 'Content-Type: application/json' \
-       -d '{"type":"forgejo","active":true,
-            "events":["pull_request","pull_request_review","issue_comment"],
-            "config":{"url":"http://api:8080/webhook","content_type":"json",
-                      "secret":"'"$PINGPONG_WEBHOOK_SECRET"'"}}'
-   ```
-
-   An unset variable there is the worst outcome available: it expands to
-   `"secret":""`, Forgejo answers `201`, and every delivery afterwards fails the
-   signature check. You get a webhook that exists, looks right in the UI, and
-   never triggers a round.
-
-   Read the hook back and the event list is longer than the one you sent:
-   Forgejo stores `pull_request_review` expanded into its `_approved`,
-   `_rejected` and `_comment` variants, and `pull_request` into `_sync`,
-   `_assign` and the rest. That is the same expansion the three UI checkboxes
-   produce, and it is why the event names above are what actually arrive.
-7. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`.
+5. Edit the places `AGENTS.md` marks *decide this per repo* in the repository you
+   just onboarded. It is what tells whoever works there how to drive the loop;
+   without it they have a forge with two bots on it and no way to know what any
+   of it means.
+6. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`.
 
 Optionally turn on branch protection requiring an approving review — that is what
 turns the reviewer's `APPROVED` into an actual merge gate.
@@ -499,6 +450,7 @@ never broken.
 
 ```bash
 ./pingpong up                      # build and start everything
+./pingpong onboard ../some-repo    # put a repository on the instance (step 4)
 ./pingpong doctor                  # config, containers, Forgejo reachability
 ./pingpong round owner/repo#123    # run one round by hand
 ./pingpong logs                    # follow the API
@@ -506,6 +458,10 @@ never broken.
 ```
 
 `round` exits non-zero unless the PR ended approved, so it can gate a script.
+
+`up`, `down`, `logs` and `onboard` run on the host; everything else runs inside
+the API container. `onboard` has to: the container can see neither the folder
+being onboarded nor the `~/.netrc` the push authenticates with.
 
 ## Tests
 

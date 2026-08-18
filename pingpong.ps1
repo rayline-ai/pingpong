@@ -16,8 +16,20 @@ try {
             if ($rest.Count -eq 0) { $rest = @('api') }
             docker compose logs -f @rest
         }
+        'onboard' {
+            # Host-side: it needs this machine's folder and ~/.netrc, neither of
+            # which the API container can see. Git Bash ships with Git for
+            # Windows, which anyone cloning this already has.
+            $bash = Get-Command bash -ErrorAction SilentlyContinue
+            if (-not $bash) {
+                Write-Error 'onboard needs bash. Install Git for Windows, or run ./onboard.sh from Git Bash / WSL.'
+                exit 1
+            }
+            & $bash.Source ./onboard.sh @rest
+        }
         { $_ -in @($null, '', '-h', '--help') } {
             Write-Host 'usage: pingpong up|down|logs'
+            Write-Host '       pingpong onboard ../some-repo'
             Write-Host '       pingpong doctor'
             Write-Host '       pingpong round owner/repo#123'
         }
