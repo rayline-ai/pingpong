@@ -268,6 +268,38 @@ not one. Then, in Forgejo:
    people share a local part across domains, and Forgejo rejects characters that
    are legal in an address but not in a username.
 
+   The password is for the web UI. Each person also needs an **access token**:
+   `templates/AGENTS.md` requires one in `~/.netrc` for `git push` and every API
+   call it makes, and is firm that it must not be the account password. Mint it
+   *after* their first login — until the forced password change is done Forgejo
+   rejects the token's calls with the same `403` described above:
+
+   ```bash
+   docker compose exec -u git forgejo forgejo admin user generate-access-token \
+       --username <them> --token-name workstation --raw \
+       --scopes write:repository,read:user
+   ```
+
+   Those two scopes are exactly what the template's own commands need and
+   nothing more: `write:repository` to push and to `POST` a pull request,
+   `read:user` for the identity checks against `/api/v1/user` and
+   `/api/v1/user/emails`.
+
+   **Do not infer a scope from the endpoint's path.** Each endpoint declares its
+   own, and neither direction of the obvious guess holds: creating a repository
+   is `POST /api/v1/user/repos` and needs `write:user` *and* `write:repository`
+   (step 4), while opening an issue is `POST /api/v1/repos/{owner}/{repo}/issues`
+   and needs `write:issue` despite living under `repos` — which is why the bots
+   above carry `write:issue` at all. When a call is refused, the `403` names the
+   scope it wanted; read it rather than widening the token by guesswork.
+
+   Mint narrowly, because you cannot clean up afterwards from here: Forgejo's
+   `DELETE /users/{username}/tokens/{id}` refuses token auth and answers
+   `401 auth method not allowed`. Revoking needs basic auth with the account
+   password, so only the person themselves can do it, in Settings →
+   Applications. A token minted from this CLI is one you are stuck with until
+   they remove it.
+
    **These accounts own the repositories and open the pull requests.** Not
    `pingpong-admin`, and never the two bot accounts — Forgejo refuses to let an
    account review its own PR, so a PR authored by the reviewer or the coder is
@@ -280,6 +312,64 @@ not one. Then, in Forgejo:
    at the start.
 
    Everything from here is per repository, and repeats for each one you add.
+
+   **Onboarding a folder that already has history** — the usual case, since a
+   repository worth reviewing normally exists before the instance does — is the
+   same step done over the API. Forgejo's admin CLI cannot help: it manages
+   accounts and nothing else, so there is no `forgejo admin repo create`. Work
+   as the owning person, with the token from step 2:
+
+   ```bash
+   F=http://<host>:<FORGEJO_PORT>       # your FORGEJO_ROOT_URL, without the trailing /
+   OWNER=<them>; REPO=<name>; TOKEN=<their token>
+   AUTH="Authorization: token $TOKEN"
+
+   curl -s -X POST "$F/api/v1/user/repos" -H "$AUTH" \
+       -H 'Content-Type: application/json' \
+       -d "{\"name\":\"$REPO\",\"auto_init\":false,\"default_branch\":\"main\"}"
+   ```
+
+   Keep `auto_init` false. An initialised repository already holds a commit of
+   its own, and pushing real history into it is then a non-fast-forward that
+   fails for a reason that reads as a permissions problem.
+
+   That one call wants **both `write:user` and `write:repository`** — a token
+   holding only one of them is refused, naming the other. The workstation token
+   from step 2 is deliberately narrower, so you have a choice: create the
+   repository in the UI, where no token is involved at all, or mint a second
+   token `--scopes write:user,write:repository` for this single call. Prefer the
+   UI. A `write:user` token can also rewrite the account's email addresses and
+   SSH keys, and per step 2 you cannot revoke it from the CLI once it exists.
+
+   Collaborators sit under `/api/v1/repos/`, so the workstation token is enough:
+
+   ```bash
+   for u in pingpong-reviewer pingpong-coder; do
+       curl -s -X PUT "$F/api/v1/repos/$OWNER/$REPO/collaborators/$u" \
+           -H "$AUTH" -H 'Content-Type: application/json' \
+           -d '{"permission":"write"}'
+   done
+   ```
+
+   Then point the folder at the instance and seed the base branch. `main` has to
+   exist before any PR can be opened against it:
+
+   ```bash
+   git remote add forgejo "$F/$OWNER/$REPO.git"
+   git push forgejo HEAD:refs/heads/main
+   git config pingpong.api http://<host>:<API_PORT>
+   ```
+
+   The remote URL carries no credential and the engine's address stays in git
+   config rather than in the repository — both are rules the reviewed repo's
+   `AGENTS.md` states and expects to hold. The credential comes from `~/.netrc`:
+
+   ```
+   machine <host> login <them> password <their token>
+   ```
+
+   Host only, no port — that one entry serves `git push forgejo` and `curl -n`
+   against both Forgejo and the engine.
 5. Copy `templates/AGENTS.md` into that repository and edit the places it marks
    *decide this per repo*. It is what tells whoever works there how to drive the
    loop; without it they have a forge with two bots on it and no way to know
@@ -303,6 +393,23 @@ not one. Then, in Forgejo:
    Both spellings are accepted. `pingpong logs` names the event of every
    delivery it ignores, and why — a trigger that silently does not fire looks
    exactly like a webhook that never arrived.
+
+   The same thing over the API, continuing the folder path from step 4:
+
+   ```bash
+   curl -s -X POST "$F/api/v1/repos/$OWNER/$REPO/hooks" -H "$AUTH" \
+       -H 'Content-Type: application/json' \
+       -d '{"type":"forgejo","active":true,
+            "events":["pull_request","pull_request_review","issue_comment"],
+            "config":{"url":"http://api:8080/webhook","content_type":"json",
+                      "secret":"'"$PINGPONG_WEBHOOK_SECRET"'"}}'
+   ```
+
+   Read the hook back and the event list is longer than the one you sent:
+   Forgejo stores `pull_request_review` expanded into its `_approved`,
+   `_rejected` and `_comment` variants, and `pull_request` into `_sync`,
+   `_assign` and the rest. That is the same expansion the three UI checkboxes
+   produce, and it is why the event names above are what actually arrive.
 7. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`.
 
 Optionally turn on branch protection requiring an approving review — that is what

@@ -12,9 +12,15 @@ forge once the loop has approved it.
 
 ## Where things are
 
-PingPong runs on another machine, not here. There is no `docker compose`, no
-`./pingpong` CLI and no container logs on this machine — you reach the instance
-over HTTP only.
+*Decide this per repo.* PingPong usually runs on another machine, and then there
+is no `docker compose`, no `./pingpong` CLI and no container logs here — you
+reach the instance over HTTP only. But it may also run on this one, and if it
+does, say so here and name the checkout. An agent that has been told the logs
+are unreachable will hand back a failure it could have read itself.
+
+Everything below goes over HTTP and is unchanged either way. The only thing this
+decides is whether "ask the human to look" is the last resort or the first thing
+to try.
 
 Nothing in this document names a host, an owner or a person. All of it comes
 from the `forgejo` remote and the credential behind it:
@@ -38,6 +44,13 @@ If the `forgejo` remote is missing, ask the human for the URL — do not guess i
 ```bash
 git remote add forgejo http://<host>:<port>/<owner>/<repo>.git
 ```
+
+A missing remote may also mean this repository has never been put on the
+instance at all. Adding it is not something you can do from here — it needs the
+bot accounts added as collaborators and a webhook registered, both with a
+credential you do not hold. Say that it is missing and let the operator run
+step 4 of the PingPong README; a remote pointing at a repository that does not
+exist fails later and less clearly than one that is absent.
 
 Credentials live in `~/.netrc`, never in this repo:
 
@@ -178,8 +191,9 @@ curl -n -s --max-time 10 "$FORGEJO/api/v1/repos/$REPO/commits/<sha>/statuses" \
 Poll on a slow interval. Do not push anything while a round is running — the
 coder is about to push to the same branch.
 
-Finer-grained diagnosis only exists on the host. If you need it, ask the human
-to look; you cannot reach it from here.
+Finer-grained diagnosis only exists on the host — `pingpong logs` and the
+container state. Whether you can reach that yourself is the per-repo question
+at the top of this file; if it is not on this machine, ask the human to look.
 
 ### 5. Take the result back
 
