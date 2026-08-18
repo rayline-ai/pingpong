@@ -81,6 +81,30 @@ class Config:
         # Falls back to it so a single-account setup still works.
         self.coder_token = os.environ.get("FORGEJO_CODER_TOKEN") or self.reviewer_token
 
+    def public(self):
+        """The loop's limits and identities, for anyone working against a repo.
+
+        Instructions kept in a consuming repository would otherwise restate
+        these, and restating them is how they go stale: every one is a per-
+        instance `.env` setting, so a doc that hardcodes `MAX_ROUNDS` is wrong
+        the moment an operator raises it. Serving them is the same rule the rest
+        of the setup already follows for identity — ask the server, do not
+        write it down twice.
+
+        Nothing secret belongs here: this is reachable by anyone who can reach
+        the engine at all. Tokens, the webhook secret and the model config are
+        all deliberately absent.
+        """
+        return {
+            "max_rounds": self.max_rounds,
+            "max_diff_bytes": self.max_diff_bytes,
+            "review_timeout": self.review_timeout,
+            "fix_timeout": self.fix_timeout,
+            "bot_email": self.bot_email,
+            "reviewer_login": self.reviewer_login,
+            "coder_login": self.coder_login,
+        }
+
     def validate(self):
         problems = []
         if not self.reviewer_token:

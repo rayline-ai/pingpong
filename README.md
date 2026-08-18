@@ -111,6 +111,7 @@ src/loop.py               one round
 src/forgejo.py            PR reads, review events, round counting
 src/gitops.py             all git, on the API's side of the mount
 src/agents.py             `docker exec hermes -z` — knows nothing about models
+templates/AGENTS.md       instructions to copy into a repository under review
 ```
 
 ## Setup
@@ -275,6 +276,52 @@ not one. Then, in Forgejo:
 
 Optionally turn on branch protection requiring an approving review — that is what
 turns the reviewer's `APPROVED` into an actual merge gate.
+
+## Using it from a repository
+
+Setting the instance up is one job; working in a repository it reviews is
+another, done by different people on different machines. `templates/AGENTS.md`
+is the second half — copy it into a reviewed repository and edit the handful of
+places it marks *decide this per repo*.
+
+The split is worth keeping sharp. That file names no host, no person and no
+limit: it derives the instance from the repository's `forgejo` remote, the
+identity from the credential behind it, and the limits from the engine. Anything
+it restated instead would be a second copy to keep true, and the numbers are the
+ones that bite — every limit below is a per-instance `.env` setting, so
+instructions that hardcode `MAX_ROUNDS` are wrong the moment an operator raises
+it.
+
+```bash
+curl -s "$API/config"
+```
+
+```json
+{"max_rounds": 3, "max_diff_bytes": 60000, "review_timeout": 900,
+ "fix_timeout": 1800, "bot_email": "...", "reviewer_login": "...",
+ "coder_login": "..."}
+```
+
+Nothing secret is served there — no tokens, no webhook secret, no model config —
+because anything that can reach the engine can read it.
+
+### What the loop says
+
+The vocabulary a PR is written in. It is defined here, and the template points
+back rather than copying it:
+
+| On the PR | Means |
+| --- | --- |
+| `pingpong/round` `pending` | a round is in flight; resolved on every exit, timeouts included |
+| `APPROVED` | the loop is done and the PR is ready |
+| `REQUEST_CHANGES` | the coder is fixing it; its push fires the next round |
+| *"stopped after N round(s)"* | `MAX_ROUNDS` spent — comment `@pingpong` to grant a fresh budget |
+| *"the coder made no edits"* | the coder read the review and changed nothing; do it by hand |
+| *"no `VERDICT:` line"* | not a review at all — the agent runtime failed; read `pingpong logs` |
+
+Only the last one is a fault in PingPong itself. The other five are the loop
+working, and a reader who cannot tell them apart will retry something that was
+never broken.
 
 ## Commands
 
