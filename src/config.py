@@ -56,7 +56,11 @@ class Config:
         self.max_rounds = _int("MAX_ROUNDS", 3)
         self.max_diff_bytes = _int("MAX_DIFF_BYTES", 60000)
         self.review_timeout = _int("REVIEW_TIMEOUT", 900)
-        self.fix_timeout = _int("FIX_TIMEOUT", 1200)
+        # 30 minutes. A coder on a local model is the case that sets this: a 9B
+        # sharing a GPU took ~10 minutes on a one-file diff, so the old 20 was
+        # not the comfortable margin it looks like. The round holds a thread for
+        # the whole of it, and the commit status now says so on the PR.
+        self.fix_timeout = _int("FIX_TIMEOUT", 1800)
 
         self.work_root = os.environ.get("WORK_ROOT", "/work")
         self.prompts_dir = os.environ.get("PROMPTS_DIR", os.path.join(self.root, "prompts"))

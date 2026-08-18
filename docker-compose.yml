@@ -73,7 +73,7 @@ services:
       MAX_ROUNDS: ${MAX_ROUNDS:-3}
       MAX_DIFF_BYTES: ${MAX_DIFF_BYTES:-60000}
       REVIEW_TIMEOUT: ${REVIEW_TIMEOUT:-900}
-      FIX_TIMEOUT: ${FIX_TIMEOUT:-1200}
+      FIX_TIMEOUT: ${FIX_TIMEOUT:-1800}
       BOT_NAME: ${BOT_NAME:-pingpong-coder}
       BOT_EMAIL: ${BOT_EMAIL:-pingpong-coder@local}
     volumes:

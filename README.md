@@ -163,7 +163,20 @@ Forgejo will ask you to choose a new one. Then, in Forgejo:
    ```
 2. Set `PINGPONG_WEBHOOK_SECRET` to any long random string.
 3. Add a repository webhook: `http://api:8080/webhook`, content type JSON, the
-   same secret, events **Pull Request** and **Pull Request Review**.
+   same secret, events **Pull Request**, **Pull Request Review** and **Issue
+   Comment** (the last is what `@pingpong` needs).
+
+   Forgejo does not send one `pull_request_review` event with the state in the
+   body the way GitHub does — it puts the state in the event name and calls the
+   action `reviewed`:
+
+   ```
+   X-Forgejo-Event: pull_request_rejected      action: reviewed
+   ```
+
+   Both spellings are accepted. `pingpong logs` names the event of every
+   delivery it ignores, and why — a trigger that silently does not fire looks
+   exactly like a webhook that never arrived.
 4. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`.
 
 Optionally turn on branch protection requiring an approving review — that is what
@@ -212,3 +225,32 @@ would stop being separable.
 credential, no remote URL. Every git operation happens in the API container, and
 pushes are fast-forward only, so a PR's history is never rewritten under a
 reviewer who may already be reading it.
+
+Keeping that true takes one deliberate step. `git clone http://<token>@host/…`
+writes the authenticated URL into `.git/config`, and the clone lives in the work
+volume *both* agents mount — so the coder's token used to be readable by the
+reviewer, whose read-only mount stops it writing files but not reading secrets.
+The token is therefore passed per git invocation (`git -c http.extraHeader=…`)
+and the stored remote URL is left clean. GitHub reached the same place with
+`actions/checkout`, which now keeps its token out of `.git/config` as well.
+
+**Progress is a commit status, not a comment.** A round can hold a thread for the
+whole of `FIX_TIMEOUT` (30 minutes) while a local model works, and until the push
+there was nothing on the PR to distinguish that from a round that had died.
+`pingpong/round` goes `pending` while the reviewer and then the coder run, and is
+resolved on every exit — including a timeout. A status is the right channel
+rather than a comment: it is attached to a sha, so it cannot go stale against a
+force-push; it replaces itself instead of accumulating; and, unlike a bot
+comment, it is not also a webhook trigger, so reporting progress can never start
+a round.
+
+**One identity check, not one per event.** Anything a PingPong account does is
+excluded from triggering a round — asked once, of the sender, rather than
+re-derived in each event branch. Spelled out per event it was right in one place
+and wrong in another: the review branch compared only `BOT_NAME` (the *coder*),
+so the reviewer's own `REQUEST_CHANGES` was never excluded and reviewed the same
+unchanged diff twice. GitHub settles it the same way — actions taken with the
+workflow's own token do not start a workflow run.
+
+The one deliberate exception is `pull_request` itself: the coder's push is the
+loop's forward edge, and what bounds it is `MAX_ROUNDS`, not the sender.
