@@ -199,8 +199,10 @@ The rest of `.env`. Back in Forgejo, signed in as `pingpong-admin`:
        --random-password --must-change-password=false
    ```
 
-   Mint each bot's token from the CLI too — the UI can only issue a token for
-   the account you are signed in as:
+   Then each bot needs a token in `.env`. Tokens are issued per account and
+   there is no admin screen for minting one on another account's behalf, so
+   either sign in as the bot and use Settings → Applications, or stay in the
+   CLI:
 
    ```bash
    docker compose exec -u git forgejo forgejo admin user generate-access-token \
@@ -208,8 +210,8 @@ The rest of `.env`. Back in Forgejo, signed in as `pingpong-admin`:
        --scopes write:repository,write:user,write:issue
    ```
 
-   The scope names are `write:repository`, `write:issue` — not `write:repo`,
-   which is rejected as an invalid scope.
+   `write:repository`, not `write:repo` — the short form is rejected as an
+   invalid scope.
 2. Set `PINGPONG_WEBHOOK_SECRET` to any long random string.
 3. Add a repository webhook: `http://api:8080/webhook`, content type JSON, the
    same secret, events **Pull Request**, **Pull Request Review** and **Issue
