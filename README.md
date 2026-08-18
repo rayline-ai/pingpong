@@ -195,7 +195,27 @@ not one. Then, in Forgejo:
 
    ```bash
    docker compose exec -u git forgejo forgejo admin user create \
-       --username pingpong-coder --email pingpong-coder@local --random-password
+       --username pingpong-coder --email pingpong-coder@local \
+       --random-password --must-change-password=false
+   ```
+
+   `--must-change-password=false` is what makes the token work. A CLI-created
+   account is otherwise required to change its password at first login, and
+   Forgejo enforces that on the **API** too — every call the token makes comes
+   back `403 You must change your password`. Nothing ever logs in as these two,
+   so nothing would clear it. It reads as a permissions problem and is not one;
+   the flag is the whole fix, and setting it at creation costs nothing.
+
+   Use it only for the bots. A person's account should keep the forced change —
+   that is what turns the printed password into a one-shot credential.
+
+   Mint each token with the scopes the engine actually uses — reading PRs and
+   diffs, posting reviews and commit statuses, and commenting:
+
+   ```bash
+   docker compose exec -u git forgejo forgejo admin user generate-access-token \
+       --username pingpong-coder --token-name pingpong --raw \
+       --scopes write:repository,write:issue
    ```
 2. Create **one account per person**, and give each the email that person's
    workstation already commits with.
@@ -250,10 +270,20 @@ not one. Then, in Forgejo:
    **These accounts own the repositories and open the pull requests.** Not
    `pingpong-admin`, and never the two bot accounts — Forgejo refuses to let an
    account review its own PR, so a PR authored by the reviewer or the coder is
-   silently never reviewed. Add both bots to each repository as collaborators
-   with **write**.
+   silently never reviewed.
 3. Set `PINGPONG_WEBHOOK_SECRET` to any long random string.
-4. Add a repository webhook: `http://api:8080/webhook`, content type JSON, the
+4. **Create a repository, owned by a person's account**, and add
+   `pingpong-reviewer` and `pingpong-coder` to it as collaborators with
+   **write** — Settings → Collaborators. Without write the reviewer cannot post
+   a review and the coder cannot push, and the round fails partway rather than
+   at the start.
+
+   Everything from here is per repository, and repeats for each one you add.
+5. Copy `templates/AGENTS.md` into that repository and edit the places it marks
+   *decide this per repo*. It is what tells whoever works there how to drive the
+   loop; without it they have a forge with two bots on it and no way to know
+   what any of it means.
+6. Add a repository webhook: `http://api:8080/webhook`, content type JSON, the
    same secret, events **Pull Request**, **Pull Request Review** and **Issue
    Comment** (the last is what `@pingpong` needs).
 
@@ -272,7 +302,7 @@ not one. Then, in Forgejo:
    Both spellings are accepted. `pingpong logs` names the event of every
    delivery it ignores, and why — a trigger that silently does not fire looks
    exactly like a webhook that never arrived.
-5. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`.
+7. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`.
 
 Optionally turn on branch protection requiring an approving review — that is what
 turns the reviewer's `APPROVED` into an actual merge gate.
