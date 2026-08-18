@@ -131,10 +131,8 @@ this is two passes.
 
 Self-registration is off (`DISABLE_REGISTRATION` in `docker-compose.yml`), so the
 first account is made with Forgejo's own CLI rather than through the sign-up page.
-Call it `pingpong-admin`. It is the human side of the setup: it owns the
-repositories and opens the pull requests, which the two bot accounts below
-deliberately never do — Forgejo refuses to let an account review its own PR, so a
-bot-authored PR is silently never reviewed:
+Call it `pingpong-admin`. This is the instance's administrator — it exists to run
+Forgejo, not to write code:
 
 ```bash
 docker compose exec -u git forgejo \
@@ -142,11 +140,40 @@ docker compose exec -u git forgejo \
     --email pingpong-admin@local --random-password
 ```
 
-It prints a generated password; log in with it at <http://localhost:3000> and
-Forgejo will ask you to choose a new one. Do that before minting a token —
-until the password is changed, Forgejo rejects the account's API writes with
-*"You must change your password"*, which looks like a permissions problem and is
-not one. Then, in Forgejo:
+**Write down what that prints.** The generated password is the only credential
+that exists at this point, it is shown once, and there is no sign-up page and no
+password-reset mail to recover from losing it — the only way back in is the same
+CLI (`forgejo admin user change-password`).
+
+```
+generated random password: <this is your sign-in password>
+New user 'pingpong-admin' has been successfully created!
+```
+
+Sign in with it at <http://localhost:3000> and change the password when Forgejo
+asks. Do that before minting any token for this account: until the password is
+changed, Forgejo rejects its API writes with *"You must change your password"*,
+which arrives through a perfectly valid token and so reads as a scope problem.
+
+### Give each person their own account
+
+`pingpong-admin` is not your account. Sign in as it, then avatar (top right) →
+**Site Administration** → **User Accounts** → **Create User Account**, one per
+person, and use that for day-to-day work. Because self-registration is off this
+is the only way anyone gets an account, so it is also how you add the second and
+third person later.
+
+Those accounts are what open pull requests and, if you want, review them by hand.
+Keeping them separate from `pingpong-admin` is what makes a PR page legible:
+admin actions and review actions stop being the same name.
+
+If an account will drive the API rather than the UI, clear **Require user to
+change password** on that form — otherwise its token hits the same rejection
+described above.
+
+### Bots, secret and webhook
+
+The rest of `.env`. Back in Forgejo, signed in as `pingpong-admin`:
 
 1. Create **two** bot accounts, `pingpong-reviewer` and `pingpong-coder`, and put a
    token from each into `.env` as `FORGEJO_REVIEWER_TOKEN` and
@@ -162,12 +189,27 @@ not one. Then, in Forgejo:
    refuses to let an account review its own.
 
    Admin → User Accounts → Create User Account does this, or the same CLI as
-   above without `--admin`:
+   above without `--admin`. Note `--must-change-password=false`: nobody is ever
+   going to sign in as a bot to clear that flag, and while it is set Forgejo
+   rejects the account's API writes.
 
    ```bash
    docker compose exec -u git forgejo forgejo admin user create \
-       --username pingpong-coder --email pingpong-coder@local --random-password
+       --username pingpong-coder --email pingpong-coder@local \
+       --random-password --must-change-password=false
    ```
+
+   Mint each bot's token from the CLI too — the UI can only issue a token for
+   the account you are signed in as:
+
+   ```bash
+   docker compose exec -u git forgejo forgejo admin user generate-access-token \
+       --username pingpong-coder --token-name pingpong \
+       --scopes write:repository,write:user,write:issue
+   ```
+
+   The scope names are `write:repository`, `write:issue` — not `write:repo`,
+   which is rejected as an invalid scope.
 2. Set `PINGPONG_WEBHOOK_SECRET` to any long random string.
 3. Add a repository webhook: `http://api:8080/webhook`, content type JSON, the
    same secret, events **Pull Request**, **Pull Request Review** and **Issue
