@@ -129,12 +129,40 @@ cp .env.sample .env        # fill in RAYLINE_ROUTER_API_KEY
 accounts and tokens that can only be minted once Forgejo has booted, which is why
 this is two passes.
 
+### Ports and address
+
+Forgejo is on **23000**, the engine on **23080**, Forgejo's SSH on **23022** —
+not 3000/8080/2222. Those defaults are the most contended numbers on a machine
+that runs anything else, and losing one shows up as a container that refuses to
+start rather than as a message naming the port. Override any of them with
+`FORGEJO_PORT`, `API_PORT`, `FORGEJO_SSH_PORT`.
+
+Only the host side moves. Inside the compose network the services keep their own
+ports, which is why `FORGEJO_URL` is `http://forgejo:3000` and the webhook target
+is `http://api:8080/webhook` no matter what you publish them on.
+
+Two more settings decide who can reach the stack:
+
+```bash
+BIND_ADDR=<host LAN address>                      # which interface to publish on
+FORGEJO_ROOT_URL=http://<host LAN address>:23000/ # the address everyone else uses
+```
+
+`BIND_ADDR` empty publishes on every interface — on a Windows host that includes
+the Hyper-V and WSL switches. Naming one address keeps the stack on the network
+it is meant to serve, at the cost of `localhost` no longer answering on that
+machine.
+
+`FORGEJO_ROOT_URL` is separate and is not cosmetic: Forgejo builds clone URLs and
+the links in everything it sends from it. Leave it `localhost` while serving a
+LAN and every other machine gets handed a URL pointing back at itself.
+
 Self-registration is off (`DISABLE_REGISTRATION` in `docker-compose.yml`), so the
 first account is made with Forgejo's own CLI rather than through the sign-up page.
-Call it `pingpong-admin`. It is the human side of the setup: it owns the
-repositories and opens the pull requests, which the two bot accounts below
-deliberately never do — Forgejo refuses to let an account review its own PR, so a
-bot-authored PR is silently never reviewed:
+Call it `pingpong-admin`. It is an **ops account**: it creates the other accounts
+and the webhooks, and that is all. It owns no repository and authors nothing, so
+that no repository's fate is tied to the account that happens to administer the
+instance:
 
 ```bash
 docker compose exec -u git forgejo \
@@ -142,7 +170,7 @@ docker compose exec -u git forgejo \
     --email pingpong-admin@local --random-password
 ```
 
-It prints a generated password; log in with it at <http://localhost:3000> and
+It prints a generated password; log in with it at <http://localhost:23000> and
 Forgejo will ask you to choose a new one. Do that before minting a token —
 until the password is changed, Forgejo rejects the account's API writes with
 *"You must change your password"*, which looks like a permissions problem and is
@@ -168,10 +196,69 @@ not one. Then, in Forgejo:
    docker compose exec -u git forgejo forgejo admin user create \
        --username pingpong-coder --email pingpong-coder@local --random-password
    ```
-2. Set `PINGPONG_WEBHOOK_SECRET` to any long random string.
-3. Add a repository webhook: `http://api:8080/webhook`, content type JSON, the
+2. Create **one account per person**, and give each the email that person's
+   workstation already commits with.
+
+   If you are setting this up on your own machine, that address is already on it
+   and there is nothing to look up:
+
+   ```bash
+   EMAIL=$(git config user.email)   # empty means no git identity on this machine
+   USER=${EMAIL%%@*}                # local part as the login; override if you prefer
+
+   test -n "$EMAIL" && docker compose exec -u git forgejo \
+       forgejo admin user create \
+       --username "$USER" --email "$EMAIL" --random-password
+   ```
+
+   ```
+   generated random password is 'xxxxxxxxxxxx'
+   New user '<them>' has been successfully created!
+   ```
+
+   **Write that password down before you clear the terminal.** It is printed
+   once and stored only as a hash, so nothing can show it to you again — and it
+   is the whole of the handover: the person signs in with it at
+   `$FORGEJO_ROOT_URL`, and Forgejo forces a change on first login, so it is a
+   one-shot credential rather than a password you are choosing on their behalf.
+
+   Lost it before they logged in? Do not recreate the account — that orphans
+   anything already attached to it. Issue a fresh one:
+
+   ```bash
+   docker compose exec -u git forgejo forgejo admin user change-password \
+       --username <them> --password '<new one>' --must-change-password
+   ```
+
+   For anyone on another machine there is nothing to derive — the host cannot see
+   their git config. Have them run `git config user.email` and send you the
+   result, then run the same command with it.
+
+   That address is the whole point of the step. Forgejo links a commit to an
+   account by the author's email, so an account created with anything else leaves
+   every commit that person pushes showing as an unlinked author — the PR still
+   works, it just stops saying who wrote what, which is most of what the loop is
+   for. If they commit under several addresses, add the rest under Settings →
+   Emails.
+
+   The login is cosmetic and the email is not, which is why only the email is
+   derived. `${EMAIL%%@*}` is a starting point, not a rule: it collides when two
+   people share a local part across domains, and Forgejo rejects characters that
+   are legal in an address but not in a username.
+
+   **These accounts own the repositories and open the pull requests.** Not
+   `pingpong-admin`, and never the two bot accounts — Forgejo refuses to let an
+   account review its own PR, so a PR authored by the reviewer or the coder is
+   silently never reviewed. Add both bots to each repository as collaborators
+   with **write**.
+3. Set `PINGPONG_WEBHOOK_SECRET` to any long random string.
+4. Add a repository webhook: `http://api:8080/webhook`, content type JSON, the
    same secret, events **Pull Request**, **Pull Request Review** and **Issue
    Comment** (the last is what `@pingpong` needs).
+
+   That is `8080`, not `API_PORT`, and it is not a typo. Forgejo calls the
+   engine from inside the compose network, where the service still listens on
+   its own port — the published one exists only for you.
 
    Forgejo does not send one `pull_request_review` event with the state in the
    body the way GitHub does — it puts the state in the event name and calls the
@@ -184,7 +271,7 @@ not one. Then, in Forgejo:
    Both spellings are accepted. `pingpong logs` names the event of every
    delivery it ignores, and why — a trigger that silently does not fire looks
    exactly like a webhook that never arrived.
-4. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`.
+5. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`.
 
 Optionally turn on branch protection requiring an approving review — that is what
 turns the reviewer's `APPROVED` into an actual merge gate.

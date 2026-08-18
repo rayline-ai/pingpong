@@ -22,7 +22,7 @@ services:
     environment:
       USER_UID: "1000"
       USER_GID: "1000"
-      FORGEJO__server__ROOT_URL: ${FORGEJO_ROOT_URL:-http://localhost:3000/}
+      FORGEJO__server__ROOT_URL: ${FORGEJO_ROOT_URL:-http://localhost:23000/}
       # Off from the very first boot, so there is no window in which a stranger
       # who reaches the port can take the instance. That also means the sign-up
       # page cannot mint the first admin — Forgejo only grants admin to the
@@ -42,9 +42,12 @@ services:
       FORGEJO__webhook__ALLOWED_HOST_LIST: "*"
     volumes:
       - forgejo-data:/data
+    # BIND_ADDR pins the published ports to one host interface. Left unset it is
+    # 0.0.0.0, which also publishes them on the Hyper-V and WSL switches; naming
+    # the LAN address keeps the stack on the one network it is meant to serve.
     ports:
-      - "${FORGEJO_PORT:-3000}:3000"
-      - "${FORGEJO_SSH_PORT:-2222}:22"
+      - "${BIND_ADDR:-0.0.0.0}:${FORGEJO_PORT:-23000}:3000"
+      - "${BIND_ADDR:-0.0.0.0}:${FORGEJO_SSH_PORT:-23022}:22"
     networks: [pingpong]
     healthcheck:
       test: ["CMD", "wget", "-qO-", "http://127.0.0.1:3000/api/healthz"]
@@ -83,7 +86,7 @@ services:
       # exec hermes` pattern the existing Hermes setup already relies on.
       - /var/run/docker.sock:/var/run/docker.sock
     ports:
-      - "${API_PORT:-8080}:8080"
+      - "${BIND_ADDR:-0.0.0.0}:${API_PORT:-23080}:8080"
     depends_on:
       forgejo:
         condition: service_healthy
