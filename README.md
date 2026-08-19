@@ -52,51 +52,126 @@ Neither the code nor `.env` names a model. Both live in one file:
 ```jsonc
 // rayline/pingpong.json
 "model_routes": {
-  "reviewer-brain": { "model": "rayline-router" },
-  "coder-brain":    { "model": "rayline-router" }
+  "reviewer-brain": { "router": "rayline-local" },   // ← blank until you choose
+  "coder-brain":    { "router": "rayline-local" }
 }
 ```
 
 Those keys are arbitrary aliases, not model ids. Each agent requests its role
 alias and Rayline resolves it. Changing a brain is a one-line edit here — no code
-change, no rebuild. `rayline-router` lets Rayline pick per request; name a real
-model instead (`gpt-5.6-terra`, `z-ai/glm-5.2`, …) to pin one.
+change, no rebuild.
 
-### Running a role on OpenRouter
+**Nothing ships chosen, and `up` refuses to start until it is.** The one thing
+this repo cannot know is which models you have, so a working default would be a
+decision taken on your behalf that you then have to notice and undo.
+`./pingpong model` is one step and it is the whole configuration.
 
-Put `OPENROUTER_API_KEY` in `.env`, point an alias at the `openrouter` endpoint
-already in the config, and recreate that agent so it picks up the key:
+The cheapest answer is usually [ollama](https://ollama.com) on this host: it is
+the one endpoint that needs no credential, so nobody pays for a provider they did
+not choose. The cost is that the model has to be pulled — so the agent checks
+precisely that at startup, rather than letting the first round discover it.
 
-```jsonc
-"coder-brain": { "endpoint": "openrouter", "model": "moonshotai/kimi-k3" }
-```
+Five endpoints ship in that file — `ollama-local`, `rayline-cloud`,
+`anthropic-direct`, `openai-direct` and `openrouter` — so switching provider is a
+line in the alias, not new plumbing. Each names the credential it draws on, and
+the agent reports at startup which one it needs and whether it is set, rather
+than failing a round half an hour later.
+
+### Choosing them
 
 ```bash
-docker compose up -d coder
+./pingpong model            # required once; asks for both roles
+./pingpong model --show     # what each is on now, and whether its key is set
+./pingpong model coder openai-direct gpt-5.6
 ```
+
+It asks the provider first, because that decides the rest: a hosted one is asked
+for its key on the spot, a local one is asked for none and offers what is on your
+machine — marked with the context window each tag was built with, since that, and
+not whether it is pulled, is what decides if the agent can call tools.
+
+Same edit as by hand, with what a hand-edit gets wrong done for you: the endpoint
+has to exist, the key it names goes into `.env` in the same step, and
+`routes.main`/`routes.subagent` move with the roles only when both agree — there
+is one config for two containers, so a per-role answer does not exist.
+
+It is instance-wide for that same reason: every repository the instance reviews
+gets the same two brains. Give them two different models where you can — a model
+reviewing its own work shares its own blind spots — but one model on both roles
+works, and is a fine start if it is all you have.
+
+`rld` reads the config once, at start, so recreate the agents afterwards:
+`docker compose up -d reviewer coder`.
+
+### Where the keys are named
+
+`.env` uses the conventional names. Inside the agent containers they are
+`RAYLINE_`-prefixed, and `docker-compose.yml` is the one-line-each mapping:
+
+| `.env` | in the agent |
+| --- | --- |
+| `RAYLINE_ROUTER_API_KEY` | `RAYLINE_ROUTER_API_KEY` |
+| `ANTHROPIC_API_KEY` | `RAYLINE_ANTHROPIC_API_KEY` |
+| `OPENAI_API_KEY` | `RAYLINE_OPENAI_API_KEY` |
+| `OPENROUTER_API_KEY` | `RAYLINE_OPENROUTER_API_KEY` |
+
+The prefix is a rule with one job: in an agent container, every credential the
+*router* uses carries it, and an unprefixed provider key belongs to the agent
+runtime. `ANTHROPIC_API_KEY` is why. Hermes will not start without one and sends
+it as `x-api-key` to the local injector, so the image bakes in a deliberate
+placeholder — which is what makes a bypassed router an instant `401`. Put a real
+key under that name and the same bypass becomes a round that quietly succeeds
+against `api.anthropic.com`, ignoring every route in the config. The agent
+refuses to start if it finds that name overridden.
+
+### Running a role on a hosted provider
+
+```bash
+./pingpong model reviewer anthropic-direct claude-opus-5
+./pingpong model coder    openai-direct    gpt-5.6
+./pingpong model coder    openrouter       moonshotai/kimi-k3
+./pingpong model reviewer rayline-cloud    rayline-router
+docker compose up -d reviewer coder
+```
+
+Going direct to Anthropic or OpenAI bypasses Rayline's *routing*, not Rayline:
+`rld` still terminates Hermes' Anthropic protocol and translates, which is all
+`openai_chat` costs to use. `rayline-router` is the opposite trade — not a model
+but the cloud-side auto-router, picking per request, which also means the model
+that answered stops appearing in the local `rld` log.
+
+Each endpoint's `models` list is that command's menu, not an allowlist: a model
+that is not on it is written as given, with a note.
 
 ### Running a role on a local model
 
-Needs [ollama](https://ollama.com) on the host. Point an alias at the
-`ollama-local` endpoint already in the config, then restart that agent:
-
-```jsonc
-"coder-brain": { "endpoint": "ollama-local", "model": "qwen3.5:9b-32k" }
-```
+Needs [ollama](https://ollama.com) on the host, which is where both roles start:
 
 ```bash
-docker compose restart coder
+./pingpong model coder ollama-local qwen3.5:9b-32k   # a bigger one
+docker compose up -d coder
 ```
 
-**Give the model a 32k context window or it will not call tools.** ollama sizes
-the window from VRAM and a constrained host silently gets 4096 tokens, which
-truncates Hermes' tool definitions out of the prompt. Bake it into the tag:
+**Give the model a 32k context window or it will not call tools** — which is what
+the `-32k` suffix means. It is a tag someone had to create, not a naming
+convention. ollama picks the default window from VRAM (`4k/32k/256k`), and on a
+constrained host that is 4096 tokens, which truncates Hermes' tool definitions
+out of the prompt: the model then narrates shell commands instead of calling
+them, and reads as too weak. Bake the window into a tag of your own:
 
 ```bash
-printf 'FROM qwen3.5:9b\nPARAMETER num_ctx 32768\n' > Modelfile
-ollama create qwen3.5:9b-32k -f Modelfile
+printf 'FROM qwen2.5-coder:7b\nPARAMETER num_ctx 32768\n' > Modelfile
+ollama create qwen2.5-coder:7b-32k -f Modelfile
 ollama ps          # CONTEXT must read 32768, not 4096
 ```
+
+Setting `OLLAMA_CONTEXT_LENGTH=32768` on the ollama *server* does the same job
+and is the better answer if you want it for every model you run. The tag is what
+ships because it is the half PingPong can carry: the env var lives on the host
+daemon and needs a restart, and nothing in this repo can set it or see it from
+inside a container. The two do not fight — measured on ollama 0.32.9, a tag
+pinned at 32768 still loads at 32768 under `OLLAMA_CONTEXT_LENGTH=8192`, and a
+value above the model's own maximum is clamped down to it.
 
 ## Layout
 
@@ -111,6 +186,7 @@ src/loop.py               one round
 src/forgejo.py            PR reads, review events, round counting
 src/gitops.py             all git, on the API's side of the mount
 src/agents.py             `docker exec hermes -z` — knows nothing about models
+src/models.py             `pingpong model`: which brain each role runs on
 accounts.sh               creates the accounts and the tokens .env needs
 onboard.sh                puts a repository on the instance; host-side, so it
                           can see your folder
@@ -121,16 +197,16 @@ SETUP.md                  standing an instance up, once per instance
 
 ## Setup
 
-You need Docker with Compose, and a Rayline router key (`rlk-…`) from
-[platform.rayline.ai/keys](https://platform.rayline.ai/keys). Everything else runs
-in containers.
+You need Docker with Compose, and somewhere for the agents to think — five
+endpoints ship, and none of them is chosen for you. Everything else runs in
+containers.
 
 ```bash
-cp .env.sample .env        # fill in RAYLINE_ROUTER_API_KEY
+cp .env.sample .env        # leave the keys empty
+./pingpong model           # required: a brain for each agent, and its key
 ./pingpong up              # builds the images; first run pulls a lot
 ./pingpong accounts        # the admin, the two bots and their tokens, and you
 ./pingpong up              # again, so the engine picks those up
-./pingpong onboard ../some-repo
 ./pingpong doctor
 ```
 
@@ -140,9 +216,20 @@ each one has a first login that only a human can do. **[SETUP.md](SETUP.md)** is
 the actual procedure, and the Forgejo behaviours that cost an afternoon if you
 meet them by surprise.
 
+That is the instance, with nothing on it. Putting a repository on it is a
+separate job, run once per repository rather than once per instance — and it acts
+as *you*, so it needs your first login done or Forgejo answers `403` to every
+call it makes:
+
+```bash
+./pingpong onboard ../some-repo
+```
+
 Forgejo lands on **23000**, the engine on **23080**, Forgejo's SSH on **23022** —
 not 3000/8080/2222, which are the most contended numbers on a machine that runs
-anything else.
+anything else. `up` fills `FORGEJO_ROOT_URL` in with this machine's address
+before it starts anything, because Forgejo bakes that into every clone URL it
+hands out and `localhost` there is wrong for everyone but you.
 
 ## Using it from a repository
 
@@ -196,6 +283,7 @@ never broken.
 ./pingpong up                      # build and start everything
 ./pingpong accounts                # the admin, the two bots and their tokens, you
 ./pingpong accounts --user x@y.z   # add a person later, --token if they are elsewhere
+./pingpong model                   # choose each role's endpoint and model
 ./pingpong onboard ../some-repo    # put a repository on the instance
 ./pingpong doctor                  # config, containers, Forgejo reachability
 ./pingpong round owner/repo#123    # run one round by hand
@@ -205,10 +293,11 @@ never broken.
 
 `round` exits non-zero unless the PR ended approved, so it can gate a script.
 
-`up`, `down`, `logs`, `accounts` and `onboard` run on the host; everything else
-runs inside the API container. Those last two have to: the container can see
-neither the folder being onboarded nor the `~/.netrc` the push authenticates
-with, and cannot run Forgejo's CLI or rewrite the operator's `.env`.
+`up`, `down`, `logs`, `accounts`, `model` and `onboard` run on the host;
+everything else runs inside the API container. The last three have to: the
+container cannot see the folder being onboarded or the `~/.netrc` the push
+authenticates with, cannot run Forgejo's CLI, and cannot rewrite the operator's
+`.env` — and `model` also has to work before there is a container at all.
 
 ## Tests
 

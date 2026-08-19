@@ -89,6 +89,10 @@ services:
     volumes:
       - work:/work
       - ./prompts:/app/prompts:ro
+      # Read-only, and read by `doctor` alone: the engine does not route
+      # anything, but "which brain is each role on" is the first question when a
+      # round comes back wrong, and it should not need a second terminal.
+      - ./rayline/pingpong.json:/etc/pingpong/rayline.json:ro
       # The API drives the agents with `docker exec`, mirroring the `docker sandbox
       # exec hermes` pattern the existing Hermes setup already relies on.
       - /var/run/docker.sock:/var/run/docker.sock
@@ -106,9 +110,21 @@ services:
     container_name: pingpong-reviewer
     restart: unless-stopped
     environment:
-      RAYLINE_ROUTER_API_KEY: ${RAYLINE_ROUTER_API_KEY:?set RAYLINE_ROUTER_API_KEY in .env}
-      # Only needed if a role points at the `openrouter` endpoint.
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Every credential the ROUTER uses is RAYLINE_-prefixed inside the agent;
+      # this block is the whole mapping from the names .env uses. The prefix is
+      # not decoration: ANTHROPIC_API_KEY already means something in this
+      # container (agent.Dockerfile bakes in a placeholder Hermes sends to the
+      # local injector), and a real key under that name stops Hermes failing
+      # loudly when it bypasses the router.
+      #
+      # Not guarded with :? — a role can run wholly on another provider, so
+      # requiring a Rayline key here would make the stack unstartable for
+      # someone who has none. The entrypoint checks the key that the role's
+      # own endpoint actually names, and says which .env value is empty.
+      RAYLINE_ROUTER_API_KEY: ${RAYLINE_ROUTER_API_KEY:-}
+      RAYLINE_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      RAYLINE_OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      RAYLINE_OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       HERMES_MODEL_ALIAS: reviewer-brain
     volumes:
       - ./rayline/pingpong.json:/etc/pingpong/rayline.json:ro
@@ -125,9 +141,12 @@ services:
     container_name: pingpong-coder
     restart: unless-stopped
     environment:
-      RAYLINE_ROUTER_API_KEY: ${RAYLINE_ROUTER_API_KEY:?set RAYLINE_ROUTER_API_KEY in .env}
-      # Only needed if a role points at the `openrouter` endpoint.
-      OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
+      # Same mapping as the reviewer; the note there says why the names differ
+      # from .env's, and why none of these is required.
+      RAYLINE_ROUTER_API_KEY: ${RAYLINE_ROUTER_API_KEY:-}
+      RAYLINE_ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      RAYLINE_OPENAI_API_KEY: ${OPENAI_API_KEY:-}
+      RAYLINE_OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       HERMES_MODEL_ALIAS: coder-brain
     volumes:
       - ./rayline/pingpong.json:/etc/pingpong/rayline.json:ro

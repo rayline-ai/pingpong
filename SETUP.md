@@ -1,29 +1,124 @@
 # Setting up a PingPong instance
 
-Standing an instance up: the stack, the accounts, and putting a repository on
-it. Working *in* a repository the instance reviews is a different job, done by
-different people — see [Using it from a
+Standing an instance up: the stack and the accounts. Setup ends with a working
+instance and no repositories on it — [adding one](#adding-a-repository) is a
+separate job below, done once per repository rather than once per instance.
+Working *in* a repository the instance reviews is a third job, done by different
+people — see [Using it from a
 repository](README.md#using-it-from-a-repository) and `templates/AGENTS.md`.
-
-Everything here is done once per instance, except step 4, which repeats for
-every repository you add.
 
 ## Starting the stack
 
-You need Docker with Compose, and a Rayline router key (`rlk-…`) from
-[platform.rayline.ai/keys](https://platform.rayline.ai/keys). Everything else runs
-in containers. Only if you want a role on a local model do you also need ollama on
-the host — see [Running a role on a local
-model](README.md#running-a-role-on-a-local-model).
+You need Docker with Compose, and somewhere for the two agents to think.
+
+**Nothing ships chosen.** `rayline/pingpong.json` carries five endpoints —
+[ollama](https://ollama.com) on this host, Rayline's cloud router, Anthropic and
+OpenAI directly, and OpenRouter — and both role routes are blank. That is
+deliberate: the one thing this repo cannot know is which models you have, and a
+default that happens to work on the author's machine is a decision taken on your
+behalf that you then have to notice and undo. `./pingpong model` fills it in, and
+`up` refuses to start until it has. See [Models](README.md#models) for what each
+endpoint costs you.
+
+Nothing else touches the host; everything else runs in containers.
 
 ```bash
-cp .env.sample .env        # fill in RAYLINE_ROUTER_API_KEY
+cp .env.sample .env        # leave the keys empty
+./pingpong model           # required: a brain for each agent; see below
 ./pingpong up              # builds the images; first run pulls a lot
 ```
 
-`up` is the only step that works before Forgejo exists — the rest of `.env` needs
-accounts and tokens that can only be minted once Forgejo has booted, which is why
-this is two passes.
+`model` is a step, not a suggestion — `up` runs `./pingpong model --check` first
+and stops if either role is still blank. Starting without it would buy nothing:
+the stack would come up and then die at the first review, which is the furthest
+possible place from the cause.
+
+It also has to come first because `rld` reads its config once, when it starts:
+choose before the agents exist and `up` brings them up already on the right
+models, rather than needing to recreate them afterwards.
+
+`up` also fills in `FORGEJO_ROOT_URL` before it starts anything, with the address
+of the interface this machine routes through — it prints what it wrote. That has
+to be right before Forgejo's first boot, and the machine already knows it, so it
+is not a question. Override it in `.env` if it picked the wrong interface.
+
+`up` is then the only step that works before Forgejo exists — the rest of `.env`
+needs accounts and tokens that can only be minted once Forgejo has booted, which
+is why this is two passes.
+
+## Choosing the brains
+
+Both agents need one, so `./pingpong model` asks twice — reviewer, then coder —
+and each question is a numbered menu of the endpoints in `rayline/pingpong.json`
+and the models on the one you pick:
+
+```
+== reviewer (not chosen yet)
+  1) ollama-local     no key — a model on this host
+  2) rayline-cloud    needs RAYLINE_ROUTER_API_KEY
+  ...
+  provider [1]: ↵
+
+  1) qwen2.5-coder:7b-32k
+  2) qwen3.5:9b-32k
+  3) gemma4:26b-a4b-it-qat no pinned window
+  4) other            type an id
+  model [1]: ↵
+```
+
+**The provider is the first question because it decides the rest of them.** A
+hosted one is asked for its key right there, and offers the models the config
+lists for it. A local one is asked for no key at all and offers what is actually
+on your machine.
+
+**The number in brackets is where the cursor sits, not an answer this project
+has picked for you** — on a fresh clone both roles are blank, and it starts on
+whatever is listed first. Once a role is set, that is what the bracket holds and
+Enter keeps it, so running the command again to change one role is two keys.
+
+It writes `rayline/pingpong.json`, then asks for whatever key the choice needs
+and writes *that* to `.env` — the choice and its cost in one step, rather than a
+config edit that fails at the next `up`.
+
+**The local list is your machine, not this project's suggestions.** It asks your
+ollama what it has, adds tags the config never mentioned, and marks each one with
+the thing that decides whether it works: the context window. `no pinned window`
+means a stock tag that will run at whatever your server's default is — 4096 on a
+constrained host, which truncates Hermes' tool definitions out of the prompt.
+Tags the config never named are only listed when their window is pinned, and the
+rest are named in a line below the menu; `other` still takes any of them if you
+have raised `OLLAMA_CONTEXT_LENGTH` on the server yourself.
+
+Pick something the host does not have and it prints the command to get it — for a
+`-32k` tag that is `ollama create` and not `ollama pull`, since the suffix means
+someone pinned the window and there is no such tag upstream. If ollama is not
+running the marks are simply absent: it will not guess.
+
+The same thing without the questions, one role at a time, and what is set now:
+
+```bash
+./pingpong model coder openai-direct gpt-5.6
+./pingpong model reviewer anthropic-direct claude-opus-5
+./pingpong model --show     # what each role is on now, and whether its key is set
+```
+
+Two things are worth knowing before you pick:
+
+- **It is instance-wide, not per-repository.** There is one routing config and it
+  is mounted into both agents, so every repository this instance reviews gets the
+  same two brains.
+- **Two different models are worth more than two copies of one.** A model
+  reviewing its own work shares its own blind spots, and the value here is that
+  the reviewer notices what the coder did not. One model on both roles still
+  works and is a fine place to start if it is all you have — it just gets you
+  less. Split them whenever you can; the reviewer is the one worth spending on.
+
+`rld` reads that config once, when it starts, so the agents keep the old routing
+until they are recreated — `docker compose up -d reviewer coder`, which the
+command reminds you of. Each agent then reports at startup which endpoint it
+resolved to and whether what it needs is there: the named key, or, for ollama,
+that the host answers and has the model. `./pingpong doctor` shows the same two
+lines afterwards.
 
 ## Ports and address
 
@@ -37,23 +132,33 @@ Only the host side moves. Inside the compose network the services keep their own
 ports, which is why `FORGEJO_URL` is `http://forgejo:3000` and the webhook target
 is `http://api:8080/webhook` no matter what you publish them on.
 
-Two more settings decide who can reach the stack:
+Two more settings decide who can reach the stack, and only one of them is yours
+to set.
+
+**`FORGEJO_ROOT_URL` is filled in for you, by `up`, before it starts anything.**
+It is the address everyone else uses, and it is not cosmetic: Forgejo builds
+clone URLs and the links in everything it sends from it, so pointing it at
+`localhost` hands every other machine a URL back to itself — silently, and only
+for other people. That has to be right before Forgejo's first boot and the
+machine already knows the answer, which is why it is not a prompt. `up` writes
+the address of the interface this machine routes through, prints it, and leaves
+anything else you have put there alone. Set it by hand for a name rather than an
+address, or when the detected interface is the wrong one:
 
 ```bash
-BIND_ADDR=<host LAN address>                      # which interface to publish on
-FORGEJO_ROOT_URL=http://<host LAN address>:23000/ # the address everyone else uses
+FORGEJO_ROOT_URL=https://forge.example.com/
 ```
 
-`BIND_ADDR` empty publishes on every interface — on a Windows host that includes
-the Hyper-V and WSL switches. Naming one address keeps the stack on the network
-it is meant to serve, at the cost of `localhost` no longer answering on that
-machine.
+**`BIND_ADDR` is yours, and empty is the sane default** — every interface, which
+on a Windows host includes the Hyper-V and WSL switches. Naming one address keeps
+the stack on the network it is meant to serve, at the cost of `localhost` no
+longer answering on that machine:
 
-`FORGEJO_ROOT_URL` is separate and is not cosmetic: Forgejo builds clone URLs and
-the links in everything it sends from it. Leave it `localhost` while serving a
-LAN and every other machine gets handed a URL pointing back at itself.
+```bash
+BIND_ADDR=<this machine's LAN address>
+```
 
-## Accounts, tokens, and the first repository
+## Accounts and tokens
 
 Self-registration is off (`DISABLE_REGISTRATION` in `docker-compose.yml`), so the
 accounts are made with Forgejo's own CLI rather than through the sign-up page.
@@ -116,65 +221,77 @@ That is one command, run from this directory:
    This is not part of setup; it is what you run months later when someone joins.
 3. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`. The
    engine reads the tokens and the webhook secret at start, so it needs a restart
-   before the next step can check the hook it registers.
-4. **Put a repository on the instance**, owned by a person's account. One
-   command, run from this directory:
+   before anything that checks a webhook can give an honest answer.
 
-   ```bash
-   ./pingpong onboard ../some-repo
-   ```
+That is the instance. `doctor` clean means Forgejo is up, both agents resolved a
+brain and found what it needs, and the engine holds the tokens — with nothing on
+the instance yet.
 
-   It creates the repository under the account whose email that folder commits
-   with, adds `pingpong-reviewer` and `pingpong-coder` as collaborators with
-   **write**, mints the owner a token if `~/.netrc` has none — or replaces one
-   the create call refuses for scope — pushes `HEAD` to `main`, sets
-   `pingpong.api`, copies `templates/AGENTS.md` in, registers the webhook and
-   proves that the webhook's secret still works. Every step checks the instance
-   first and reports `already` rather than failing, so a run interrupted halfway
-   is repeated rather than unpicked — and running it again on a repository that
-   is already set up is a useful check in itself.
+## Adding a repository
 
-   That is a script rather than a list of steps here because most of what this
-   step knows is conditional — which scope a call needs, what order the
-   credential and the push go in, whether the folder was ever pointed at an
-   instance before. Prose cannot check any of it, and every one of those
-   failures is a quiet one.
+Not part of setup, and not something to hurry into: this is what you run once per
+repository, whenever you have one to review, including months later. It needs
+**step 2 done first** — it acts as *you*, not as a bot, and Forgejo answers `403`
+to every call a person's token makes until that account's first login clears the
+forced password change.
 
-   Everything from here is per repository, and repeats for each one you add.
+**Put a repository on the instance**, owned by a person's account. One command,
+run from this directory:
 
-   Four things it does that are worth knowing anyway, because they are what
-   costs time when this goes wrong elsewhere:
+```bash
+./pingpong onboard ../some-repo
+```
 
-   - **The bots need write.** Without it the reviewer cannot post a review and
-     the coder cannot push, and the round fails partway rather than at the start.
-   - **The hook's secret is checked by using it, every run.** An empty or stale
-     one is the worst failure this setup has: Forgejo answers `201`, the hook
-     looks correct in the UI, and every delivery afterwards fails its signature
-     check. `onboard` refuses to create a hook with an empty secret, and for one
-     that already exists it makes Forgejo sign a throwaway delivery and reads the
-     engine's verdict — the only way to know, since the secret cannot be read
-     back or edited. See [The webhook secret cannot be read
-     back](#the-webhook-secret-cannot-be-read-back).
-   - **`main` has to exist before a PR can be opened against it**, which is why
-     the folder's `HEAD` goes there first — and why the repository is created
-     with `auto_init` false. An initialised repository already holds a commit of
-     its own, and pushing real history at it is then a non-fast-forward that
-     fails for a reason that reads as a permissions problem.
-   - **No credential in the remote URL, and the engine's address in git config
-     rather than in the repository.** Both are rules the reviewed repo's
-     `AGENTS.md` states and expects to hold. The credential comes from
-     `~/.netrc`, host only and no port, and that one entry serves both
-     `git push forgejo` and `curl -n` against Forgejo and the engine.
+It creates the repository under the account whose email that folder commits with,
+adds `pingpong-reviewer` and `pingpong-coder` as collaborators with **write**,
+mints the owner a token if `~/.netrc` has none — or replaces one the create call
+refuses for scope — pushes `HEAD` to `main`, sets `pingpong.api`, copies
+`templates/AGENTS.md` in, registers the webhook and proves that the webhook's
+secret still works. Every step checks the instance first and reports `already`
+rather than failing, so a run interrupted halfway is repeated rather than
+unpicked — and running it again on a repository that is already set up is a
+useful check in itself.
 
-   To do the same thing by hand — or to read a hook back and understand its
-   event list — see [Onboarding a repository by hand](#onboarding-a-repository-by-hand).
-5. Edit the places `AGENTS.md` marks *decide this per repo* in the repository you
-   just onboarded. It is what tells whoever works there how to drive the loop;
-   without it they have a forge with two bots on it and no way to know what any
-   of it means.
+That is a script rather than a list of steps here because most of what it knows
+is conditional — which scope a call needs, what order the credential and the push
+go in, whether the folder was ever pointed at an instance before. Prose cannot
+check any of it, and every one of those failures is a quiet one.
+
+Then **edit the places `AGENTS.md` marks *decide this per repo*** in the
+repository you just onboarded. It is what tells whoever works there how to drive
+the loop; without it they have a forge with two bots on it and no way to know
+what any of it means.
 
 Optionally turn on branch protection requiring an approving review — that is what
-turns the reviewer's `APPROVED` into an actual merge gate.
+turns the reviewer's `APPROVED` into an actual merge gate. Per repository, like
+everything else in this section.
+
+Four things `onboard` does that are worth knowing anyway, because they are what
+costs time when this goes wrong elsewhere:
+
+- **The bots need write.** Without it the reviewer cannot post a review and the
+  coder cannot push, and the round fails partway rather than at the start.
+- **The hook's secret is checked by using it, every run.** An empty or stale one
+  is the worst failure this setup has: Forgejo answers `201`, the hook looks
+  correct in the UI, and every delivery afterwards fails its signature check.
+  `onboard` refuses to create a hook with an empty secret, and for one that
+  already exists it makes Forgejo sign a throwaway delivery and reads the
+  engine's verdict — the only way to know, since the secret cannot be read back
+  or edited. See [The webhook secret cannot be read
+  back](#the-webhook-secret-cannot-be-read-back).
+- **`main` has to exist before a PR can be opened against it**, which is why the
+  folder's `HEAD` goes there first — and why the repository is created with
+  `auto_init` false. An initialised repository already holds a commit of its own,
+  and pushing real history at it is then a non-fast-forward that fails for a
+  reason that reads as a permissions problem.
+- **No credential in the remote URL, and the engine's address in git config
+  rather than in the repository.** Both are rules the reviewed repo's `AGENTS.md`
+  states and expects to hold. The credential comes from `~/.netrc`, host only and
+  no port, and that one entry serves both `git push forgejo` and `curl -n`
+  against Forgejo and the engine.
+
+To do the same thing by hand — or to read a hook back and understand its event
+list — see [Onboarding a repository by hand](#onboarding-a-repository-by-hand).
 
 ## Reference
 
@@ -260,11 +377,11 @@ across namespaces. The three on a person's token:
 | --- | --- |
 | `write:repository` | `git push`, and `POST` of a pull request |
 | `read:user` | the identity checks in `templates/AGENTS.md` — `/api/v1/user`, `/api/v1/user/emails` |
-| `write:user` | one call only: creating a repository, in step 4 |
+| `write:user` | one call only: creating a repository, in [Adding a repository](#adding-a-repository) |
 
-`write:user` is on this token rather than on a second one because step 4 repeats
-for every repository you ever add, and a token minted per repository is a token
-you cannot revoke per repository. Better one credential you know the whereabouts
+`write:user` is on this token rather than on a second one because onboarding
+repeats for every repository you ever add, and a token minted per repository is a
+token you cannot revoke per repository. Better one credential you know the whereabouts
 of than a growing set of forgotten ones.
 
 Know what it widens: `write:user` also rewrites the account's email addresses and
@@ -302,7 +419,7 @@ repository is not — that is the accumulation worth avoiding.
 
 ### Onboarding a repository by hand
 
-What step 4 automates: create the repository (with `auto_init` **false**), add
+What `onboard` automates: create the repository (with `auto_init` **false**), add
 `pingpong-reviewer` and `pingpong-coder` under Settings → Collaborators with
 **write**, push the folder's `HEAD` to `main`, and add a webhook pointing at
 `http://api:8080/webhook`, content type JSON, `PINGPONG_WEBHOOK_SECRET` as the
