@@ -193,7 +193,8 @@ box that is [ollama](https://ollama.com) on this host, no key anywhere. Everythi
 else runs in containers.
 
 ```bash
-cp .env.sample .env        # no key needed yet
+cp .env.sample .env        # no key needed — but set FORGEJO_ROOT_URL to this
+                           # machine's IP, which ships as a placeholder
 ./pingpong up              # builds the images; first run pulls a lot
 ./pingpong accounts        # the admin, the two bots and their tokens, and you
 ./pingpong model           # optional: put a role on a hosted model instead

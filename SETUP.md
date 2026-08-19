@@ -21,6 +21,9 @@ Nothing else touches the host; everything else runs in containers.
 
 ```bash
 cp .env.sample .env        # no key needed yet
+                           # then set FORGEJO_ROOT_URL — it ships as a
+                           # placeholder, because the address other machines
+                           # use is the one thing nothing can guess for you
 ./pingpong up              # builds the images; first run pulls a lot
 ```
 
@@ -89,8 +92,11 @@ it is meant to serve, at the cost of `localhost` no longer answering on that
 machine.
 
 `FORGEJO_ROOT_URL` is separate and is not cosmetic: Forgejo builds clone URLs and
-the links in everything it sends from it. Leave it `localhost` while serving a
-LAN and every other machine gets handed a URL pointing back at itself.
+the links in everything it sends from it. Point it at `localhost` while serving a
+LAN and every other machine gets handed a URL pointing back at itself — which is
+why `.env.sample` ships `http://<ip-address>:23000/` rather than a value that
+looks right and works only for you. Get the address with `ip route get 1.1.1.1`
+on Linux or macOS, or `ipconfig | findstr IPv4` on Windows.
 
 ## Accounts and tokens
 
