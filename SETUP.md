@@ -56,132 +56,67 @@ LAN and every other machine gets handed a URL pointing back at itself.
 ## Accounts, tokens, and the first repository
 
 Self-registration is off (`DISABLE_REGISTRATION` in `docker-compose.yml`), so the
-first account is made with Forgejo's own CLI rather than through the sign-up page.
-Call it `pingpong-admin`. It is an **ops account**: it creates the other accounts
-and the webhooks, and that is all. It owns no repository and authors nothing, so
-that no repository's fate is tied to the account that happens to administer the
-instance:
+accounts are made with Forgejo's own CLI rather than through the sign-up page.
+That is one command, run from this directory:
 
-```bash
-docker compose exec -u git forgejo \
-    forgejo admin user create --admin --username pingpong-admin \
-    --email pingpong-admin@local --random-password
-```
-
-It prints a generated password; log in with it at whatever you set
-`FORGEJO_ROOT_URL` to — `localhost` only if you left `BIND_ADDR` empty — and
-Forgejo will ask you to choose a new one. Do that before minting a token —
-until the password is changed, Forgejo rejects the account's API writes with
-*"You must change your password"*, which looks like a permissions problem and is
-not one. Then, in Forgejo:
-
-1. Create **two** bot accounts, `pingpong-reviewer` and `pingpong-coder`, and put a
-   token from each into `.env` as `FORGEJO_REVIEWER_TOKEN` and
-   `FORGEJO_CODER_TOKEN`. One account per role is what makes the PR page readable:
-   the reviewer posts the reviews, the coder authors *and pushes* the commits.
-   Forgejo credits an "added N commits" event to whoever pushed rather than to the
-   commit's author, so a single shared token shows the reviewer writing the fixes.
-
-   Give `pingpong-coder` the address in `BOT_EMAIL` — that is what links a commit
-   to the account — and give `pingpong-reviewer` a different one. Rounds are
-   counted from commits carrying `BOT_EMAIL`, so if the reviewer shared it, its own
-   commits would count as rounds. Neither account should author PRs: Forgejo
-   refuses to let an account review its own.
-
-   Admin → User Accounts → Create User Account does this, or the same CLI as
-   above without `--admin`:
+1. **Create the accounts and the secrets that depend on them.**
 
    ```bash
-   docker compose exec -u git forgejo forgejo admin user create \
-       --username pingpong-coder --email pingpong-coder@local \
-       --random-password --must-change-password=false
+   ./pingpong accounts
    ```
 
-   `--must-change-password=false` is what makes the token work, and it belongs on
-   the bots only — see [The forced password change](#the-forced-password-change).
+   It creates `pingpong-admin`, the two bot accounts `pingpong-reviewer` and
+   `pingpong-coder` with a token from each in `.env`, a random
+   `PINGPONG_WEBHOOK_SECRET`, and an account for whoever this checkout commits as
+   — read off `git config user.email`, because Forgejo links a commit to an
+   account by the author's email. It prints each generated password once.
 
-   Mint each token with the scopes the engine actually uses — reading PRs and
-   diffs, posting reviews and commit statuses, and commenting:
+   Every account is looked up before it is created and every `.env` value is
+   written only if it is empty, so an interrupted run is repeated rather than
+   unpicked, and re-running it changes nothing. Before its first write it keeps
+   the old file as `.env.accounts-<timestamp>` — gitignored, and holding whatever
+   tokens `.env` held, so treat it as one.
 
-   ```bash
-   docker compose exec -u git forgejo forgejo admin user generate-access-token \
-       --username pingpong-coder --token-name pingpong --raw \
-       --scopes write:repository,write:issue
-   ```
-2. Create **one account per person**, and give each the email that person's
-   workstation already commits with.
+   What it does not do is mint a person a token. A token cannot be revoked from
+   the admin side ([Replacing a token you cannot
+   revoke](#replacing-a-token-you-cannot-revoke)), so one is minted only where
+   something will store it: `onboard` puts this machine's in `~/.netrc`, and
+   `--token` below hands one to someone on another machine.
 
-   If you are setting this up on your own machine, that address is already on it
-   and there is nothing to look up:
+   Three things it arranges are worth knowing, because they are what the loop
+   depends on: [why there are two bots](#why-two-bot-accounts), [why a person's
+   account is created from their commit address](#one-account-per-person), and
+   [the forced password change](#the-forced-password-change) each printed password
+   still needs.
+2. **Log in once as each account it created**, at whatever you set
+   `FORGEJO_ROOT_URL` to — `localhost` only if you left `BIND_ADDR` empty.
+   Forgejo asks for a new password, and that is the step nothing can do for you:
+   until it is done every API call the account's token makes comes back `403 You
+   must change your password`. The bots are exempt and are created that way.
 
-   ```bash
-   EMAIL=$(git config user.email)   # empty means no git identity on this machine
-   USER=${EMAIL%%@*}                # local part as the login; override if you prefer
-
-   test -n "$EMAIL" && docker compose exec -u git forgejo \
-       forgejo admin user create \
-       --username "$USER" --email "$EMAIL" --random-password
-   ```
-
-   ```
-   generated random password is 'xxxxxxxxxxxx'
-   New user '<them>' has been successfully created!
-   ```
-
-   **Write that password down before you clear the terminal.** It is printed
-   once and stored only as a hash, so nothing can show it to you again — and it
-   is the whole of the handover: the person signs in with it at
-   `$FORGEJO_ROOT_URL`, and Forgejo forces a change on first login, so it is a
-   one-shot credential rather than a password you are choosing on their behalf.
-
-   Lost it before they logged in? Do not recreate the account — that orphans
-   anything already attached to it. Issue a fresh one:
+   **Write the printed passwords down before you clear the terminal.** They are
+   stored only as a hash, so nothing can show them again. Lost one before its
+   first login? Do not recreate the account — that orphans anything already
+   attached to it. Issue a fresh password instead:
 
    ```bash
    docker compose exec -u git forgejo forgejo admin user change-password \
        --username <them> --password '<new one>' --must-change-password
    ```
 
-   For anyone on another machine there is nothing to derive — the host cannot see
-   their git config. Have them run `git config user.email` and send you the
-   result, then run the same command with it.
-
-   That address is the whole point of the step. Forgejo links a commit to an
-   account by the author's email, so an account created with anything else leaves
-   every commit that person pushes showing as an unlinked author — the PR still
-   works, it just stops saying who wrote what, which is most of what the loop is
-   for. If they commit under several addresses, add the rest under Settings →
-   Emails.
-
-   The login is cosmetic and the email is not, which is why only the email is
-   derived. `${EMAIL%%@*}` is a starting point, not a rule: it collides when two
-   people share a local part across domains, and Forgejo rejects characters that
-   are legal in an address but not in a username.
-
-   The password is for the web UI. Each person also needs an **access token**:
-   `templates/AGENTS.md` requires one in `~/.netrc` for `git push` and every API
-   call it makes, and is firm that it must not be the account password. Mint it
-   *after* their first login — until the forced password change is done Forgejo
-   rejects the token's calls with the same `403` ([The forced password
-   change](#the-forced-password-change)):
+   Anyone else who will use the instance gets an account the same way. There is
+   nothing to derive for them — the host cannot see their git config — so ask
+   them for `git config user.email`, and add `--token` if they work on another
+   machine and need one to carry to their own `~/.netrc`:
 
    ```bash
-   docker compose exec -u git forgejo forgejo admin user generate-access-token \
-       --username <them> --token-name workstation --raw \
-       --scopes write:repository,write:user,read:user
+   ./pingpong accounts --user them@example.com --token
    ```
 
-   Three scopes, one token, minted once — see [Token scopes](#token-scopes) for
-   why those three and what `write:user` costs. Getting them right at this moment
-   matters, because you cannot widen a token afterwards and you cannot revoke one
-   either: [Replacing a token you cannot
-   revoke](#replacing-a-token-you-cannot-revoke).
-
-   **These accounts own the repositories and open the pull requests.** Not
-   `pingpong-admin`, and never the two bot accounts — Forgejo refuses to let an
-   account review its own PR, so a PR authored by the reviewer or the coder is
-   silently never reviewed.
-3. Set `PINGPONG_WEBHOOK_SECRET` to any long random string.
+   This is not part of setup; it is what you run months later when someone joins.
+3. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`. The
+   engine reads the tokens and the webhook secret at start, so it needs a restart
+   before the next step can check the hook it registers.
 4. **Put a repository on the instance**, owned by a person's account. One
    command, run from this directory:
 
@@ -237,7 +172,6 @@ not one. Then, in Forgejo:
    just onboarded. It is what tells whoever works there how to drive the loop;
    without it they have a forge with two bots on it and no way to know what any
    of it means.
-6. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`.
 
 Optionally turn on branch protection requiring an approving review — that is what
 turns the reviewer's `APPROVED` into an actual merge gate.
@@ -246,6 +180,61 @@ turns the reviewer's `APPROVED` into an actual merge gate.
 
 None of this is a step. It is the handful of Forgejo behaviours that cost a
 setup its afternoon, kept out of the steps above so the steps stay short.
+
+### Why two bot accounts
+
+One account per role is what makes the PR page readable: the reviewer posts the
+reviews, the coder authors *and pushes* the commits. Forgejo credits an "added N
+commits" event to whoever pushed rather than to the commit's author, so a single
+shared token shows the reviewer writing the fixes it asked for.
+
+`pingpong-coder` carries the address in `BOT_EMAIL` and `pingpong-reviewer` must
+not. Rounds are counted from commits authored with `BOT_EMAIL`, so a reviewer
+sharing it would have its own commits counted as rounds — and a coder *not*
+carrying it means no commit is ever counted, so `MAX_ROUNDS` never bites and the
+loop has no bound. `accounts` checks that pairing on every run, including for an
+account it did not create, because it is the one address in the system that is
+load-bearing.
+
+Neither bot should author PRs. Forgejo refuses to let an account review its own,
+so a PR opened by the reviewer or the coder is silently never reviewed. The
+repositories and the PRs belong to people's accounts — not to `pingpong-admin`
+either, which is an ops account: it creates the others and administers the
+instance, owns no repository and authors nothing, so no repository's fate is tied
+to the account that happens to administer the instance. Nothing uses an admin
+*token*; it exists for the CLI and the web UI.
+
+### One account per person
+
+Each person's account is created with the email their workstation already commits
+with. That address is the whole point: Forgejo links a commit to an account by
+the author's email, so an account created with anything else leaves every commit
+that person pushes showing as an unlinked author. The PR still works, it just
+stops saying who wrote what, which is most of what the loop is for. If they
+commit under several addresses, add the rest under Settings → Emails.
+
+The login is cosmetic and the email is not, which is why only the email is
+derived. `accounts` takes the local part of the address as the login, which is a
+starting point and not a rule — it collides when two people share a local part
+across domains, and Forgejo rejects characters that are legal in an address but
+not in a username. `--login` overrides it.
+
+The printed password is for the web UI. Each person also needs an **access
+token**: `templates/AGENTS.md` requires one in `~/.netrc` for `git push` and
+every API call it makes, and is firm that it must not be the account password.
+It has to be minted *after* their first login, or it meets the same `403` below.
+On this machine `onboard` does that when it needs one; for anyone else it is
+`accounts --user … --token`, which mints exactly these scopes:
+
+```
+write:repository,write:user,read:user
+```
+
+Three scopes, one token, minted once — see [Token scopes](#token-scopes) for why
+those three and what `write:user` costs. Getting them right at that moment
+matters, because a token cannot be widened afterwards and cannot be revoked from
+here either: [Replacing a token you cannot
+revoke](#replacing-a-token-you-cannot-revoke).
 
 ### The forced password change
 

@@ -111,6 +111,7 @@ src/loop.py               one round
 src/forgejo.py            PR reads, review events, round counting
 src/gitops.py             all git, on the API's side of the mount
 src/agents.py             `docker exec hermes -z` — knows nothing about models
+accounts.sh               creates the accounts and the tokens .env needs
 onboard.sh                puts a repository on the instance; host-side, so it
                           can see your folder
 templates/AGENTS.md       instructions to copy into a repository under review
@@ -127,13 +128,15 @@ in containers.
 ```bash
 cp .env.sample .env        # fill in RAYLINE_ROUTER_API_KEY
 ./pingpong up              # builds the images; first run pulls a lot
+./pingpong accounts        # the admin, the two bots and their tokens, and you
+./pingpong up              # again, so the engine picks those up
 ./pingpong onboard ../some-repo
 ./pingpong doctor
 ```
 
-That is the shape of it, but not the whole of it: between `up` and `onboard` come
-the accounts — one admin, one per bot, one per person — and the tokens they carry,
-none of which can be minted until Forgejo has booted. **[SETUP.md](SETUP.md)** is
+Two passes, because the accounts and the tokens the rest of `.env` needs cannot
+be minted until Forgejo has booted. `accounts` prints a password per account, and
+each one has a first login that only a human can do. **[SETUP.md](SETUP.md)** is
 the actual procedure, and the Forgejo behaviours that cost an afternoon if you
 meet them by surprise.
 
@@ -191,6 +194,8 @@ never broken.
 
 ```bash
 ./pingpong up                      # build and start everything
+./pingpong accounts                # the admin, the two bots and their tokens, you
+./pingpong accounts --user x@y.z   # add a person later, --token if they are elsewhere
 ./pingpong onboard ../some-repo    # put a repository on the instance
 ./pingpong doctor                  # config, containers, Forgejo reachability
 ./pingpong round owner/repo#123    # run one round by hand
@@ -200,9 +205,10 @@ never broken.
 
 `round` exits non-zero unless the PR ended approved, so it can gate a script.
 
-`up`, `down`, `logs` and `onboard` run on the host; everything else runs inside
-the API container. `onboard` has to: the container can see neither the folder
-being onboarded nor the `~/.netrc` the push authenticates with.
+`up`, `down`, `logs`, `accounts` and `onboard` run on the host; everything else
+runs inside the API container. Those last two have to: the container can see
+neither the folder being onboarded nor the `~/.netrc` the push authenticates
+with, and cannot run Forgejo's CLI or rewrite the operator's `.env`.
 
 ## Tests
 

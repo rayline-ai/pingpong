@@ -1,6 +1,8 @@
-# Secrets
+# Secrets. `.env.*` catches the timestamped backups `accounts` keeps before it
+# rewrites .env — they hold the tokens the old file held.
 .env
 *.env
+.env.*
 !*.env.sample
 
 # Per-run state
