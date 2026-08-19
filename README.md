@@ -111,88 +111,92 @@ src/loop.py               one round
 src/forgejo.py            PR reads, review events, round counting
 src/gitops.py             all git, on the API's side of the mount
 src/agents.py             `docker exec hermes -z` — knows nothing about models
+accounts.sh               creates the accounts and the tokens .env needs
+onboard.sh                puts a repository on the instance; host-side, so it
+                          can see your folder
+templates/AGENTS.md       instructions to copy into a repository under review
+watch.sh                  a test aid, not part of the system: live round progress
+SETUP.md                  standing an instance up, once per instance
 ```
 
 ## Setup
 
 You need Docker with Compose, and a Rayline router key (`rlk-…`) from
 [platform.rayline.ai/keys](https://platform.rayline.ai/keys). Everything else runs
-in containers. Only if you want a role on a local model do you also need ollama on
-the host — see [above](#running-a-role-on-a-local-model).
+in containers.
 
 ```bash
 cp .env.sample .env        # fill in RAYLINE_ROUTER_API_KEY
 ./pingpong up              # builds the images; first run pulls a lot
+./pingpong accounts        # the admin, the two bots and their tokens, and you
+./pingpong up              # again, so the engine picks those up
+./pingpong onboard ../some-repo
+./pingpong doctor
 ```
 
-`up` is the only step that works before Forgejo exists — the rest of `.env` needs
-accounts and tokens that can only be minted once Forgejo has booted, which is why
-this is two passes.
+Two passes, because the accounts and the tokens the rest of `.env` needs cannot
+be minted until Forgejo has booted. `accounts` prints a password per account, and
+each one has a first login that only a human can do. **[SETUP.md](SETUP.md)** is
+the actual procedure, and the Forgejo behaviours that cost an afternoon if you
+meet them by surprise.
 
-Self-registration is off (`DISABLE_REGISTRATION` in `docker-compose.yml`), so the
-first account is made with Forgejo's own CLI rather than through the sign-up page.
-Call it `pingpong-admin`. It is the human side of the setup: it owns the
-repositories and opens the pull requests, which the two bot accounts below
-deliberately never do — Forgejo refuses to let an account review its own PR, so a
-bot-authored PR is silently never reviewed:
+Forgejo lands on **23000**, the engine on **23080**, Forgejo's SSH on **23022** —
+not 3000/8080/2222, which are the most contended numbers on a machine that runs
+anything else.
+
+## Using it from a repository
+
+Setting the instance up is one job; working in a repository it reviews is
+another, done by different people on different machines. `templates/AGENTS.md`
+is the second half — copy it into a reviewed repository and edit the handful of
+places it marks *decide this per repo*.
+
+The split is worth keeping sharp. That file names no host, no person and no
+limit: it derives the instance from the repository's `forgejo` remote, the
+identity from the credential behind it, and the limits from the engine. Anything
+it restated instead would be a second copy to keep true, and the numbers are the
+ones that bite — every limit below is a per-instance `.env` setting, so
+instructions that hardcode `MAX_ROUNDS` are wrong the moment an operator raises
+it.
 
 ```bash
-docker compose exec -u git forgejo \
-    forgejo admin user create --admin --username pingpong-admin \
-    --email pingpong-admin@local --random-password
+curl -s "$API/config"
 ```
 
-It prints a generated password; log in with it at <http://localhost:3000> and
-Forgejo will ask you to choose a new one. Do that before minting a token —
-until the password is changed, Forgejo rejects the account's API writes with
-*"You must change your password"*, which looks like a permissions problem and is
-not one. Then, in Forgejo:
+```json
+{"max_rounds": 3, "max_diff_bytes": 60000, "review_timeout": 900,
+ "fix_timeout": 1800, "bot_email": "...", "reviewer_login": "...",
+ "coder_login": "..."}
+```
 
-1. Create **two** bot accounts, `pingpong-reviewer` and `pingpong-coder`, and put a
-   token from each into `.env` as `FORGEJO_REVIEWER_TOKEN` and
-   `FORGEJO_CODER_TOKEN`. One account per role is what makes the PR page readable:
-   the reviewer posts the reviews, the coder authors *and pushes* the commits.
-   Forgejo credits an "added N commits" event to whoever pushed rather than to the
-   commit's author, so a single shared token shows the reviewer writing the fixes.
+Nothing secret is served there — no tokens, no webhook secret, no model config —
+because anything that can reach the engine can read it.
 
-   Give `pingpong-coder` the address in `BOT_EMAIL` — that is what links a commit
-   to the account — and give `pingpong-reviewer` a different one. Rounds are
-   counted from commits carrying `BOT_EMAIL`, so if the reviewer shared it, its own
-   commits would count as rounds. Neither account should author PRs: Forgejo
-   refuses to let an account review its own.
+### What the loop says
 
-   Admin → User Accounts → Create User Account does this, or the same CLI as
-   above without `--admin`:
+The vocabulary a PR is written in. It is defined here, and the template points
+back rather than copying it:
 
-   ```bash
-   docker compose exec -u git forgejo forgejo admin user create \
-       --username pingpong-coder --email pingpong-coder@local --random-password
-   ```
-2. Set `PINGPONG_WEBHOOK_SECRET` to any long random string.
-3. Add a repository webhook: `http://api:8080/webhook`, content type JSON, the
-   same secret, events **Pull Request**, **Pull Request Review** and **Issue
-   Comment** (the last is what `@pingpong` needs).
+| On the PR | Means |
+| --- | --- |
+| `pingpong/round` `pending` | a round is in flight; resolved on every exit, timeouts included |
+| `APPROVED` | the loop is done and the PR is ready |
+| `REQUEST_CHANGES` | the coder is fixing it; its push fires the next round |
+| *"stopped after N round(s)"* | `MAX_ROUNDS` spent — comment `@pingpong` to grant a fresh budget |
+| *"the coder made no edits"* | the coder read the review and changed nothing; do it by hand |
+| *"no `VERDICT:` line"* | not a review at all — the agent runtime failed; read `pingpong logs` |
 
-   Forgejo does not send one `pull_request_review` event with the state in the
-   body the way GitHub does — it puts the state in the event name and calls the
-   action `reviewed`:
-
-   ```
-   X-Forgejo-Event: pull_request_rejected      action: reviewed
-   ```
-
-   Both spellings are accepted. `pingpong logs` names the event of every
-   delivery it ignores, and why — a trigger that silently does not fire looks
-   exactly like a webhook that never arrived.
-4. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`.
-
-Optionally turn on branch protection requiring an approving review — that is what
-turns the reviewer's `APPROVED` into an actual merge gate.
+Only the last one is a fault in PingPong itself. The other five are the loop
+working, and a reader who cannot tell them apart will retry something that was
+never broken.
 
 ## Commands
 
 ```bash
 ./pingpong up                      # build and start everything
+./pingpong accounts                # the admin, the two bots and their tokens, you
+./pingpong accounts --user x@y.z   # add a person later, --token if they are elsewhere
+./pingpong onboard ../some-repo    # put a repository on the instance
 ./pingpong doctor                  # config, containers, Forgejo reachability
 ./pingpong round owner/repo#123    # run one round by hand
 ./pingpong logs                    # follow the API
@@ -200,6 +204,11 @@ turns the reviewer's `APPROVED` into an actual merge gate.
 ```
 
 `round` exits non-zero unless the PR ended approved, so it can gate a script.
+
+`up`, `down`, `logs`, `accounts` and `onboard` run on the host; everything else
+runs inside the API container. Those last two have to: the container can see
+neither the folder being onboarded nor the `~/.netrc` the push authenticates
+with, and cannot run Forgejo's CLI or rewrite the operator's `.env`.
 
 ## Tests
 

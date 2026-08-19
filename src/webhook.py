@@ -170,7 +170,10 @@ class Handler(BaseHTTPRequestHandler):
     server_version = "PingPongAPI/1.0"
 
     def _reply(self, code, message):
-        body = json.dumps({"status": message}).encode("utf-8")
+        self._send(code, {"status": message})
+
+    def _send(self, code, payload):
+        body = json.dumps(payload).encode("utf-8")
         self.send_response(code)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -178,8 +181,11 @@ class Handler(BaseHTTPRequestHandler):
         self.wfile.write(body)
 
     def do_GET(self):
-        if self.path.rstrip("/") in ("/healthz", ""):
+        path = self.path.rstrip("/")
+        if path in ("/healthz", ""):
             self._reply(200, "ok")
+        elif path == "/config":
+            self._send(200, self.cfg.public())
         else:
             self._reply(404, "not found")
 
