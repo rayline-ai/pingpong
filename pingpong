@@ -7,8 +7,37 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 
+# Run one, do not look one up: on Windows `python3` and `python` are Store stubs
+# that `command -v` finds and that exit 49 without running anything. model.sh
+# carries the same probe, because each of these is runnable on its own.
+find_python() {
+    for candidate in python3 python py; do
+        command -v "$candidate" >/dev/null 2>&1 || continue
+        if "$candidate" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 7) else 1)' \
+           >/dev/null 2>&1; then
+            echo "$candidate"
+            return 0
+        fi
+    done
+    return 1
+}
+
 case "${1:-}" in
-    up)      shift; exec docker compose up -d --build "$@" ;;
+    up)
+        shift
+        # Before compose reads .env, not after: Forgejo bakes FORGEJO_ROOT_URL
+        # into clone URLs at boot. Best-effort — a missing python is not a
+        # reason to refuse to start the stack.
+        if [ -f .env ] && PY=$(find_python); then
+            "$PY" -m src.address || true
+        fi
+        # This one does refuse. No brain is chosen out of the box, and starting
+        # anyway buys nothing: the stack comes up and dies at the first review,
+        # which is the furthest possible place from the cause.
+        if PY=$(find_python); then
+            "$PY" -m src.models --check || exit 1
+        fi
+        exec docker compose up -d --build "$@" ;;
     down)    shift; exec docker compose down "$@" ;;
     logs)    shift; exec docker compose logs -f "${@:-api}" ;;
     accounts) shift; exec ./accounts.sh "$@" ;;

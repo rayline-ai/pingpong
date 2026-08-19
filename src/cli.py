@@ -65,7 +65,7 @@ def _brain(role):
         cfg = models.load(ROUTING_CONFIG)
         endpoint_id, model = models.route(cfg, role)
         if not endpoint_id:
-            return "no endpoint — %s names one that is not there" % models.ROLES[role]
+            return "not chosen — run `./pingpong model` on the host"
         return "%s / %s" % (endpoint_id, model)
     except (models.ModelError, KeyError):
         return "unknown (%s not readable here)" % ROUTING_CONFIG

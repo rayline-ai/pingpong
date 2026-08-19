@@ -7,6 +7,7 @@ import io
 import json
 import os
 import shutil
+import subprocess
 import sys
 import tempfile
 import unittest
@@ -74,6 +75,27 @@ class Sandbox(unittest.TestCase):
                             ("ENV_PATH", self.env_path)):
             original = getattr(models, name)
             setattr(models, name, value)
+            self.addCleanup(setattr, models, name, original)
+
+        # The fixture's local endpoint is 127.0.0.1:11434 once rewritten for the
+        # host, which on a developer's machine is a *live ollama* — its tags
+        # would land in the menu and move every index these tests count on.
+        # Unknown is the default; `self.host_has(...)` opts a test back in.
+        self.host_has(None)
+
+    def host_has(self, tags, windows=None):
+        """What the local endpoint reports having: a set, or None for "could not
+        be asked", which is what an absent ollama looks like. `windows` maps a
+        tag to its pinned num_ctx; anything unlisted is treated as pinned, so a
+        test only says so when the window is the point."""
+        windows = windows or {}
+        for name, stub in (
+                ("local_models",
+                 lambda spec, timeout=3: None if spec.get("api_key_env") else tags),
+                ("pinned_window",
+                 lambda spec, tag, timeout=3: windows.get(tag, models.WANTED_WINDOW))):
+            original = getattr(models, name)
+            setattr(models, name, stub)
             self.addCleanup(setattr, models, name, original)
 
     def written(self):
@@ -198,7 +220,57 @@ class TestEnvSet(Sandbox):
             models.env_set("OPENAI_API_KEY", "x", path=self.env_path)
 
 
+class TestCheck(Sandbox):
+    """`up` runs this before compose. It is the whole reason a blank config is
+    safe to ship: the refusal happens at the step that can fix it."""
+
+    def blank(self):
+        cfg = self.written()
+        for entry in list(cfg["routes"]["model_routes"].values()) + [
+                cfg["routes"]["main"], cfg["routes"]["subagent"]]:
+            entry.pop("endpoint", None)
+            entry.pop("model", None)
+        models.save(cfg, self.config_path)
+
+    def test_it_is_silent_when_both_roles_are_chosen(self):
+        code, output = self.run_cli(["--check"])
+        self.assertEqual(code, 0)
+        self.assertEqual(output, "")
+
+    def test_it_refuses_and_names_the_command_that_fixes_it(self):
+        self.blank()
+        code, output = self.run_cli(["--check"])
+        self.assertEqual(code, 1)
+        self.assertIn("reviewer or the coder", output)
+        self.assertIn("./pingpong model", output)
+
+    def test_one_role_short_is_still_a_refusal(self):
+        # Half-configured is not configured: the other agent still has no brain.
+        cfg = self.written()
+        cfg["routes"]["model_routes"]["coder-brain"].pop("endpoint")
+        models.save(cfg, self.config_path)
+        code, output = self.run_cli(["--check"])
+        self.assertEqual(code, 1)
+        self.assertIn("No brain chosen for the coder.", output)
+
+    def test_it_writes_nothing(self):
+        self.blank()
+        before = self.env_text(), self.written()
+        self.run_cli(["--check"])
+        self.assertEqual((self.env_text(), self.written()), before)
+
+
 class TestCLI(Sandbox):
+    def test_show_points_at_the_command_when_nothing_is_chosen(self):
+        cfg = self.written()
+        for entry in cfg["routes"]["model_routes"].values():
+            entry.pop("endpoint")
+        models.save(cfg, self.config_path)
+        code, output = self.run_cli(["--show"])
+        self.assertEqual(code, 0)
+        self.assertIn("not chosen yet", output)
+        self.assertIn("./pingpong model", output)
+
     def test_show_changes_nothing(self):
         before = self.env_text()
         code, output = self.run_cli(["--show"])
@@ -257,9 +329,11 @@ class TestCLI(Sandbox):
             self.run_cli(["coder", "openai-direct"])
 
     def test_interactive_picks_both_roles(self):
-        # reviewer: endpoint 2 (openai-direct), model 1 (gpt-5.6)
-        # coder:    endpoint 1 (ollama-local), model 2 (qwen2.5-coder:7b)
-        code, output = self.run_cli([], answers=["2", "1", "1", "2", "sk-test"])
+        # The menu is ordered by PROVIDER_ORDER, not by the config array, so
+        # openai-direct is 3 here even though the fixture lists it second.
+        # reviewer: provider 3 (openai-direct), its key, then model 1 (gpt-5.6)
+        # coder:    provider 1 (ollama-local), no key to ask, model 2
+        code, output = self.run_cli([], answers=["3", "sk-test", "1", "1", "2"])
         self.assertEqual(code, 0)
         cfg = self.written()
         self.assertEqual(models.route(cfg, "reviewer"), ("openai-direct", "gpt-5.6"))
@@ -279,14 +353,68 @@ class TestCLI(Sandbox):
                          ("ollama-local", "qwen3.5:9b-32k"))
 
     def test_interactive_rejects_a_number_off_the_menu_and_asks_again(self):
-        code, output = self.run_cli([], answers=["9", "1", "1", "1", "1"])
+        code, output = self.run_cli([], answers=["9", "1", "1", "1", "1", "1"])
         self.assertIn("not one of", output)
         self.assertEqual(models.route(self.written(), "reviewer")[0], "ollama-local")
 
+    def test_the_local_menu_leads_with_what_the_host_has(self):
+        # A tag the config never suggested is still a real answer if it is on
+        # the disk; a suggested one that is missing is not, and goes last.
+        self.host_has({"qwen2.5-coder:7b", "llama9:70b"})
+
+        code, output = self.run_cli([], answers=["1", "2", "1", "1"])
+        top = output[output.index("== reviewer"):output.index("== coder")]
+        # By menu position, not by offset in the text: the header line names the
+        # current model too, and would match first.
+        entries = [line.strip() for line in top.splitlines()
+                   if line.strip()[1:3] == ") "]
+        # past the provider menu, and stopping before the "other" escape hatch
+        menu = entries[len(models.endpoints(self.written())):-1]
+        self.assertEqual(menu, ["1) qwen2.5-coder:7b",
+                                "2) llama9:70b       pulled here, not in the config",
+                                "3) qwen3.5:9b-32k   not on this host"])
+        self.assertEqual(models.route(self.written(), "reviewer"),
+                         ("ollama-local", "llama9:70b"))
+
+    def test_a_suggested_model_with_a_stock_window_is_offered_but_marked(self):
+        # It is in the config and on the disk, so refusing it would be wrong;
+        # saying nothing would be worse. gemma4 in the shipped config is exactly
+        # this case.
+        self.host_has({"qwen3.5:9b-32k", "qwen2.5-coder:7b"},
+                      windows={"qwen2.5-coder:7b": None})
+        code, output = self.run_cli([], answers=["1", "2", "1", "1"])
+        self.assertIn("no pinned window", output)
+        self.assertEqual(models.route(self.written(), "reviewer"),
+                         ("ollama-local", "qwen2.5-coder:7b"))
+
+    def test_unpinned_tags_the_config_never_named_are_named_not_listed(self):
+        # A machine with a dozen models pulled would otherwise bury the ones
+        # that work. They are still reachable through `other`.
+        self.host_has({"qwen3.5:9b-32k", "mistral:7b", "llama9:70b"},
+                      windows={"mistral:7b": None, "llama9:70b": 4096})
+        code, output = self.run_cli([], answers=["1", "1", "1", "1"])
+        top = output[output.index("== reviewer"):output.index("== coder")]
+        self.assertIn("2 more here have no pinned window", top)
+        self.assertIn("llama9:70b", top)
+        self.assertIn("mistral:7b", top)
+        entries = [line for line in top.splitlines() if line.strip()[1:3] == ") "]
+        self.assertNotIn("mistral:7b", "".join(entries))
+
+    def test_a_missing_model_comes_with_the_command_to_get_it(self):
+        self.host_has(set())
+        code, output = self.run_cli([], answers=["1", "1", "1", "1"])
+        self.assertIn("does not have", output)
+        self.assertIn("ollama create qwen3.5:9b-32k -f Modelfile", output)
+
+    def test_a_local_provider_is_never_asked_for_a_key(self):
+        code, output = self.run_cli([], answers=["1", "1", "1", "1"])
+        self.assertNotIn("paste it", output)
+
     def test_interactive_other_takes_a_typed_model(self):
-        # reviewer: endpoint 2, model "other" (3rd of 2 models + other), typed
-        code, output = self.run_cli([], answers=["2", "3", "gpt-6-preview",
-                                                 "1", "1", "sk-test"])
+        # reviewer: provider 3 (openai-direct), model "other" (3rd of 2
+        # models + other), typed
+        code, output = self.run_cli([], answers=["3", "sk-test", "3",
+                                                 "gpt-6-preview", "1", "1"])
         self.assertEqual(models.route(self.written(), "reviewer"),
                          ("openai-direct", "gpt-6-preview"))
         self.assertIn("menu, not a limit", output)
@@ -299,13 +427,49 @@ class TestShippedConfig(unittest.TestCase):
     def setUp(self):
         self.cfg = models.load(os.path.join(REPO, "rayline", "pingpong.json"))
 
-    def test_both_roles_name_an_endpoint_that_exists(self):
+    def committed(self):
+        """The config as committed, not as it sits on disk. `./pingpong model`
+        rewrites the working copy, so asserting on that would fail for every
+        operator who has run it — including on this machine."""
+        try:
+            blob = subprocess.check_output(
+                ["git", "show", "HEAD:rayline/pingpong.json"], cwd=REPO,
+                stderr=subprocess.DEVNULL)
+        except (OSError, subprocess.CalledProcessError):
+            self.skipTest("no git, or the file is not committed here")
+        return json.loads(blob.decode("utf-8"))
+
+    def test_it_ships_with_no_brain_chosen(self):
+        # On purpose, and this is the assertion that keeps it that way: a
+        # working default is a decision made on the operator's behalf, and the
+        # one thing this repo cannot know is which models are on their host.
+        cfg = self.committed()
+        self.assertEqual(models.unset_roles(cfg), ["reviewer", "coder"],
+                         "the committed config names a brain, so a fresh clone "
+                         "gets a default nobody chose")
         for role in ("reviewer", "coder"):
-            endpoint_id, model = models.route(self.cfg, role)
-            spec = models.endpoint(self.cfg, endpoint_id)
-            self.assertIn(model, spec.get("models") or [],
-                          "%s is on %s, which does not list %s"
-                          % (role, endpoint_id, model))
+            self.assertEqual(models.route(cfg, role), (None, None))
+
+    def test_the_shared_routes_ship_unset_too(self):
+        # `main` is the fallback for anything naming neither alias. Leaving it
+        # pointed somewhere while the roles are blank is a half-default.
+        cfg = self.committed()
+        for shared in ("main", "subagent"):
+            entry = cfg["routes"][shared]
+            self.assertNotIn("model", entry)
+            self.assertNotIn("endpoint", entry)
+
+    def test_the_provider_menu_leads_with_local_then_rayline(self):
+        names = [spec["id"] for spec in models.ordered_endpoints(self.cfg)]
+        self.assertEqual(names[:2], ["ollama-local", "rayline-cloud"])
+        self.assertEqual(sorted(names),
+                         sorted(spec["id"] for spec in models.endpoints(self.cfg)))
+
+    def test_every_endpoint_lists_models_that_could_be_chosen(self):
+        for spec in models.endpoints(self.cfg):
+            self.assertTrue(spec.get("models"),
+                            "%s offers no menu, so `model` has nothing to show"
+                            % spec.get("id"))
 
     def test_every_endpoint_key_has_a_dotenv_name(self):
         for spec in models.endpoints(self.cfg):

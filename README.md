@@ -52,8 +52,8 @@ Neither the code nor `.env` names a model. Both live in one file:
 ```jsonc
 // rayline/pingpong.json
 "model_routes": {
-  "reviewer-brain": { "endpoint": "ollama-local", "model": "qwen2.5-coder:7b-32k" },
-  "coder-brain":    { "endpoint": "ollama-local", "model": "qwen2.5-coder:7b-32k" }
+  "reviewer-brain": { "router": "rayline-local" },   // ← blank until you choose
+  "coder-brain":    { "router": "rayline-local" }
 }
 ```
 
@@ -61,11 +61,15 @@ Those keys are arbitrary aliases, not model ids. Each agent requests its role
 alias and Rayline resolves it. Changing a brain is a one-line edit here — no code
 change, no rebuild.
 
-**Both roles ship on ollama**, the one endpoint that needs no credential, so a
-fresh clone asks for no key and nobody pays for a provider they did not choose.
-The cost is that it needs [ollama](https://ollama.com) on the host with the model
-pulled — so the agent checks precisely that at startup, rather than letting the
-first round discover it.
+**Nothing ships chosen, and `up` refuses to start until it is.** The one thing
+this repo cannot know is which models you have, so a working default would be a
+decision taken on your behalf that you then have to notice and undo.
+`./pingpong model` is one step and it is the whole configuration.
+
+The cheapest answer is usually [ollama](https://ollama.com) on this host: it is
+the one endpoint that needs no credential, so nobody pays for a provider they did
+not choose. The cost is that the model has to be pulled — so the agent checks
+precisely that at startup, rather than letting the first round discover it.
 
 Five endpoints ship in that file — `ollama-local`, `rayline-cloud`,
 `anthropic-direct`, `openai-direct` and `openrouter` — so switching provider is a
@@ -76,22 +80,25 @@ than failing a round half an hour later.
 ### Choosing them
 
 ```bash
-./pingpong model            # asks for both roles; Enter keeps what is set
+./pingpong model            # required once; asks for both roles
 ./pingpong model --show     # what each is on now, and whether its key is set
 ./pingpong model coder openai-direct gpt-5.6
 ```
 
-Same edit as by hand, with the four things a hand-edit gets wrong done for you:
-the endpoint has to exist, the key it names goes into `.env` in the same step,
+It asks the provider first, because that decides the rest: a hosted one is asked
+for its key on the spot, a local one is asked for none and offers what is on your
+machine — marked with the context window each tag was built with, since that, and
+not whether it is pulled, is what decides if the agent can call tools.
+
+Same edit as by hand, with what a hand-edit gets wrong done for you: the endpoint
+has to exist, the key it names goes into `.env` in the same step, and
 `routes.main`/`routes.subagent` move with the roles only when both agree — there
-is one config for two containers, so a per-role answer does not exist — and for a
-local endpoint the menu is checked against what your ollama actually has, marking
-what you are missing and printing the command to get it.
+is one config for two containers, so a per-role answer does not exist.
 
 It is instance-wide for that same reason: every repository the instance reviews
-gets the same two brains. And pointing both roles at one model costs you the
-point of the exercise — a model reviewing its own work shares its own blind
-spots.
+gets the same two brains. Give them two different models where you can — a model
+reviewing its own work shares its own blind spots — but one model on both roles
+works, and is a fine start if it is all you have.
 
 `rld` reads the config once, at start, so recreate the agents afterwards:
 `docker compose up -d reviewer coder`.
@@ -190,14 +197,13 @@ SETUP.md                  standing an instance up, once per instance
 
 ## Setup
 
-You need Docker with Compose, and somewhere for the agents to think — out of the
-box that is [ollama](https://ollama.com) on this host, no key anywhere. Everything
-else runs in containers.
+You need Docker with Compose, and somewhere for the agents to think — five
+endpoints ship, and none of them is chosen for you. Everything else runs in
+containers.
 
 ```bash
-cp .env.sample .env        # no key needed — but set FORGEJO_ROOT_URL to this
-                           # machine's IP, which ships as a placeholder
-./pingpong model           # a brain for each agent; Enter keeps the local one
+cp .env.sample .env        # leave the keys empty
+./pingpong model           # required: a brain for each agent, and its key
 ./pingpong up              # builds the images; first run pulls a lot
 ./pingpong accounts        # the admin, the two bots and their tokens, and you
 ./pingpong up              # again, so the engine picks those up
@@ -221,7 +227,9 @@ call it makes:
 
 Forgejo lands on **23000**, the engine on **23080**, Forgejo's SSH on **23022** —
 not 3000/8080/2222, which are the most contended numbers on a machine that runs
-anything else.
+anything else. `up` fills `FORGEJO_ROOT_URL` in with this machine's address
+before it starts anything, because Forgejo bakes that into every clone URL it
+hands out and `localhost` there is wrong for everyone but you.
 
 ## Using it from a repository
 

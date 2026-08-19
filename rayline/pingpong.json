@@ -12,11 +12,16 @@
     "writes them, checks the model against the endpoint's list, and asks for the",
     "key that choice needs. Everything else in this file is yours.",
     "",
-    "Both roles ship on `ollama-local`, the only endpoint here that needs no",
-    "credential — so a fresh clone asks for no key at all, and nobody pays for a",
-    "provider they never chose. The cost is that it needs ollama on the host with",
-    "the model pulled, and the agent's entrypoint checks exactly that at start",
-    "rather than letting the first round discover it.",
+    "NOTHING SHIPS CHOSEN. Both role routes below are blank, and that is the",
+    "point: a working default is a decision made for you by a stranger, and the",
+    "one thing this file cannot know is which models you have. `./pingpong model`",
+    "fills them in — SETUP.md step 2 — and `up` refuses to start until it has.",
+    "It is a one-time step and it is the whole configuration.",
+    "",
+    "`ollama-local` is the only endpoint here that needs no credential, so it is",
+    "the cheapest answer if you have ollama on this host; the cost is that the",
+    "model must be pulled, and the agent's entrypoint checks exactly that at",
+    "start rather than letting the first round discover it.",
     "",
     "`rayline-router` on the rayline-cloud endpoint is the other end of that trade:",
     "not a model but the cloud-side auto-router at api.rayline.ai, picking per",
@@ -161,24 +166,16 @@
   ],
   "routes": {
     "main": {
-      "endpoint": "ollama-local",
-      "model": "qwen2.5-coder:7b-32k",
       "router": "rayline-local"
     },
     "subagent": {
-      "endpoint": "ollama-local",
-      "model": "qwen2.5-coder:7b-32k",
       "router": "rayline-local"
     },
     "model_routes": {
       "reviewer-brain": {
-        "endpoint": "ollama-local",
-        "model": "qwen2.5-coder:7b-32k",
         "router": "rayline-local"
       },
       "coder-brain": {
-        "endpoint": "ollama-local",
-        "model": "qwen2.5-coder:7b-32k",
         "router": "rayline-local"
       }
     }

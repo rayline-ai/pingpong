@@ -9,28 +9,38 @@ repository](README.md#using-it-from-a-repository) and `templates/AGENTS.md`.
 
 ## Starting the stack
 
-You need Docker with Compose, and somewhere for the two agents to think. Both
-roles ship pointed at `ollama-local`, so out of the box that is
-[ollama](https://ollama.com) running on this host with the model pulled, and no
-key anywhere. If you would rather rent the thinking, `rayline/pingpong.json`
-carries four more endpoints — Rayline's cloud router, Anthropic and OpenAI
-directly, and OpenRouter — and each names the one key it draws on. See
-[Models](README.md#models) for what each costs you.
+You need Docker with Compose, and somewhere for the two agents to think.
+
+**Nothing ships chosen.** `rayline/pingpong.json` carries five endpoints —
+[ollama](https://ollama.com) on this host, Rayline's cloud router, Anthropic and
+OpenAI directly, and OpenRouter — and both role routes are blank. That is
+deliberate: the one thing this repo cannot know is which models you have, and a
+default that happens to work on the author's machine is a decision taken on your
+behalf that you then have to notice and undo. `./pingpong model` fills it in, and
+`up` refuses to start until it has. See [Models](README.md#models) for what each
+endpoint costs you.
 
 Nothing else touches the host; everything else runs in containers.
 
 ```bash
-cp .env.sample .env        # no key needed yet
-                           # then set FORGEJO_ROOT_URL — it ships as a
-                           # placeholder, because the address other machines
-                           # use is the one thing nothing can guess for you
-./pingpong model           # pick a brain for each agent; see below
+cp .env.sample .env        # leave the keys empty
+./pingpong model           # required: a brain for each agent; see below
 ./pingpong up              # builds the images; first run pulls a lot
 ```
 
-`model` comes first because `rld` reads its config once, when it starts: choose
-before the agents exist and `up` brings them up already on the right models,
-rather than needing to recreate them afterwards.
+`model` is a step, not a suggestion — `up` runs `./pingpong model --check` first
+and stops if either role is still blank. Starting without it would buy nothing:
+the stack would come up and then die at the first review, which is the furthest
+possible place from the cause.
+
+It also has to come first because `rld` reads its config once, when it starts:
+choose before the agents exist and `up` brings them up already on the right
+models, rather than needing to recreate them afterwards.
+
+`up` also fills in `FORGEJO_ROOT_URL` before it starts anything, with the address
+of the interface this machine routes through — it prints what it wrote. That has
+to be right before Forgejo's first boot, and the machine already knows it, so it
+is not a question. Override it in `.env` if it picked the wrong interface.
 
 `up` is then the only step that works before Forgejo exists — the rest of `.env`
 needs accounts and tokens that can only be minted once Forgejo has booted, which
@@ -43,33 +53,46 @@ and each question is a numbered menu of the endpoints in `rayline/pingpong.json`
 and the models on the one you pick:
 
 ```
-== reviewer (currently ollama-local / qwen2.5-coder:7b-32k)
+== reviewer (not chosen yet)
   1) ollama-local     no key — a model on this host
   2) rayline-cloud    needs RAYLINE_ROUTER_API_KEY
   ...
-  endpoint [1]: ↵
+  provider [1]: ↵
 
   1) qwen2.5-coder:7b-32k
-  2) qwen3.5:9b-32k      not on this host
-  ...
+  2) qwen3.5:9b-32k
+  3) gemma4:26b-a4b-it-qat no pinned window
+  4) other            type an id
   model [1]: ↵
 ```
 
-**The default in brackets is what that role is on now, and Enter takes it.** So
-pressing Enter through both questions leaves the shipped answer in place: both
-roles on `ollama-local`, no key anywhere, thinking done by
-[ollama](https://ollama.com) on this host. Answer differently and it writes
-`rayline/pingpong.json`, then asks for whatever key that choice needs and writes
-*that* to `.env` — the choice and its cost in one step, rather than a config edit
-that fails at the next `up`.
+**The provider is the first question because it decides the rest of them.** A
+hosted one is asked for its key right there, and offers the models the config
+lists for it. A local one is asked for no key at all and offers what is actually
+on your machine.
 
-**`not on this host` is the list telling you the truth about your machine.** For a
-local endpoint the command asks your ollama what it actually has, because the
-models in the config are what this project suggests and say nothing about what
-you have pulled. Pick one you are missing and it prints the command to get it —
-which for a `-32k` tag is `ollama create` and not `ollama pull`, since that
-suffix means someone pinned the context window and there is no such tag upstream.
-If ollama is not running the marks are simply absent: it will not guess.
+**The number in brackets is where the cursor sits, not an answer this project
+has picked for you** — on a fresh clone both roles are blank, and it starts on
+whatever is listed first. Once a role is set, that is what the bracket holds and
+Enter keeps it, so running the command again to change one role is two keys.
+
+It writes `rayline/pingpong.json`, then asks for whatever key the choice needs
+and writes *that* to `.env` — the choice and its cost in one step, rather than a
+config edit that fails at the next `up`.
+
+**The local list is your machine, not this project's suggestions.** It asks your
+ollama what it has, adds tags the config never mentioned, and marks each one with
+the thing that decides whether it works: the context window. `no pinned window`
+means a stock tag that will run at whatever your server's default is — 4096 on a
+constrained host, which truncates Hermes' tool definitions out of the prompt.
+Tags the config never named are only listed when their window is pinned, and the
+rest are named in a line below the menu; `other` still takes any of them if you
+have raised `OLLAMA_CONTEXT_LENGTH` on the server yourself.
+
+Pick something the host does not have and it prints the command to get it — for a
+`-32k` tag that is `ollama create` and not `ollama pull`, since the suffix means
+someone pinned the window and there is no such tag upstream. If ollama is not
+running the marks are simply absent: it will not guess.
 
 The same thing without the questions, one role at a time, and what is set now:
 
@@ -84,9 +107,11 @@ Two things are worth knowing before you pick:
 - **It is instance-wide, not per-repository.** There is one routing config and it
   is mounted into both agents, so every repository this instance reviews gets the
   same two brains.
-- **Running the two roles on the same model costs you the point of the exercise.**
-  A model reviewing its own work shares its own blind spots; the value here is
-  that the reviewer notices what the coder did not.
+- **Two different models are worth more than two copies of one.** A model
+  reviewing its own work shares its own blind spots, and the value here is that
+  the reviewer notices what the coder did not. One model on both roles still
+  works and is a fine place to start if it is all you have — it just gets you
+  less. Split them whenever you can; the reviewer is the one worth spending on.
 
 `rld` reads that config once, when it starts, so the agents keep the old routing
 until they are recreated — `docker compose up -d reviewer coder`, which the
@@ -107,24 +132,31 @@ Only the host side moves. Inside the compose network the services keep their own
 ports, which is why `FORGEJO_URL` is `http://forgejo:3000` and the webhook target
 is `http://api:8080/webhook` no matter what you publish them on.
 
-Two more settings decide who can reach the stack:
+Two more settings decide who can reach the stack, and only one of them is yours
+to set.
+
+**`FORGEJO_ROOT_URL` is filled in for you, by `up`, before it starts anything.**
+It is the address everyone else uses, and it is not cosmetic: Forgejo builds
+clone URLs and the links in everything it sends from it, so pointing it at
+`localhost` hands every other machine a URL back to itself — silently, and only
+for other people. That has to be right before Forgejo's first boot and the
+machine already knows the answer, which is why it is not a prompt. `up` writes
+the address of the interface this machine routes through, prints it, and leaves
+anything else you have put there alone. Set it by hand for a name rather than an
+address, or when the detected interface is the wrong one:
 
 ```bash
-BIND_ADDR=<host LAN address>                      # which interface to publish on
-FORGEJO_ROOT_URL=http://<host LAN address>:23000/ # the address everyone else uses
+FORGEJO_ROOT_URL=https://forge.example.com/
 ```
 
-`BIND_ADDR` empty publishes on every interface — on a Windows host that includes
-the Hyper-V and WSL switches. Naming one address keeps the stack on the network
-it is meant to serve, at the cost of `localhost` no longer answering on that
-machine.
+**`BIND_ADDR` is yours, and empty is the sane default** — every interface, which
+on a Windows host includes the Hyper-V and WSL switches. Naming one address keeps
+the stack on the network it is meant to serve, at the cost of `localhost` no
+longer answering on that machine:
 
-`FORGEJO_ROOT_URL` is separate and is not cosmetic: Forgejo builds clone URLs and
-the links in everything it sends from it. Point it at `localhost` while serving a
-LAN and every other machine gets handed a URL pointing back at itself — which is
-why `.env.sample` ships `http://<ip-address>:23000/` rather than a value that
-looks right and works only for you. Get the address with `ip route get 1.1.1.1`
-on Linux or macOS, or `ipconfig | findstr IPv4` on Windows.
+```bash
+BIND_ADDR=<this machine's LAN address>
+```
 
 ## Accounts and tokens
 

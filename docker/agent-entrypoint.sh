@@ -29,11 +29,20 @@ esac
 ROUTE=$(jq -r --arg alias "${HERMES_MODEL_ALIAS}" '
     .routes.model_routes[$alias] as $r
     | if $r == null then ""
+      elif ($r.endpoint // "") == "" then "UNCHOSEN"
       else (.endpoints[] | select(.id == $r.endpoint)) as $e
            | [$r.endpoint, $r.model, ($e.api_key_env // ""), ($e.base_url // "")] | .[]
       end
 ' "${RAYLINE_CONFIG}" 2>/dev/null || true)
 
+# Blank is what ships, so it is worth its own message: nothing is broken, a step
+# has not been run. `./pingpong up` checks this before compose and never gets
+# here — this is the path for someone driving `docker compose` directly.
+if [ "${ROUTE}" = "UNCHOSEN" ]; then
+    echo "[agent] FATAL: no brain chosen for ${HERMES_MODEL_ALIAS}. Nothing ships" >&2
+    echo "[agent] chosen — run ./pingpong model on the host, then ./pingpong up." >&2
+    exit 1
+fi
 if [ -z "${ROUTE}" ]; then
     echo "[agent] FATAL: ${HERMES_MODEL_ALIAS} names no endpoint that exists in" >&2
     echo "[agent] ${RAYLINE_CONFIG}. Pick one with ./pingpong model." >&2
