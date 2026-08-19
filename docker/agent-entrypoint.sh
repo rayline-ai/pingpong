@@ -22,29 +22,71 @@ case "${ANTHROPIC_API_KEY:-}" in
         exit 1 ;;
 esac
 
-# Which credential this role needs is not fixed — it is whatever the endpoint
-# behind its alias names, and `ollama-local` names none. Ask the config rather
-# than requiring a Rayline key that a role on OpenAI would never use. Empty is
-# reported here, at start, rather than as a failed round half an hour later.
-KEY_ENV=$(jq -r --arg alias "${HERMES_MODEL_ALIAS}" '
-    .routes.model_routes[$alias].endpoint as $id
-    | (.endpoints[] | select(.id == $id) | .api_key_env) // empty
+# What this role needs is not fixed — it is whatever the endpoint behind its
+# alias declares. Ask the config rather than requiring a Rayline key that a role
+# on OpenAI or on ollama would never use. Whatever is missing is reported here,
+# at start, rather than as a round that dies half an hour in.
+ROUTE=$(jq -r --arg alias "${HERMES_MODEL_ALIAS}" '
+    .routes.model_routes[$alias] as $r
+    | if $r == null then ""
+      else (.endpoints[] | select(.id == $r.endpoint)) as $e
+           | [$r.endpoint, $r.model, ($e.api_key_env // ""), ($e.base_url // "")] | .[]
+      end
 ' "${RAYLINE_CONFIG}" 2>/dev/null || true)
 
-if [ -z "${KEY_ENV}" ]; then
-    echo "[agent] ${HERMES_MODEL_ALIAS} needs no credential (local endpoint)"
-elif [ -z "${!KEY_ENV:-}" ]; then
-    # Report the name the operator can act on. docker-compose.yml maps .env's
-    # ANTHROPIC_API_KEY to the container's RAYLINE_ANTHROPIC_API_KEY, so naming
-    # the container variable would send them looking for something not in .env.
-    DOTENV_NAME=$(printf '%s' "${KEY_ENV}" | sed 's/^RAYLINE_ANTHROPIC_/ANTHROPIC_/; s/^RAYLINE_OPENAI_/OPENAI_/; s/^RAYLINE_OPENROUTER_/OPENROUTER_/')
-    echo "[agent] FATAL: ${HERMES_MODEL_ALIAS} routes to an endpoint that needs" >&2
-    echo "[agent] ${DOTENV_NAME}, and it is empty. Set it in .env and re-run" >&2
-    echo "[agent] ./pingpong up, or point the alias at another endpoint in" >&2
-    echo "[agent] rayline/pingpong.json." >&2
+if [ -z "${ROUTE}" ]; then
+    echo "[agent] FATAL: ${HERMES_MODEL_ALIAS} names no endpoint that exists in" >&2
+    echo "[agent] ${RAYLINE_CONFIG}. Pick one with ./pingpong model." >&2
     exit 1
-else
+fi
+# One field per line, not a delimited row: an endpoint with no api_key_env has an
+# empty field in the middle, and `read` collapses runs of IFS *whitespace* — so a
+# tab-separated row would silently shift base_url into KEY_ENV.
+{ read -r ENDPOINT; read -r MODEL; read -r KEY_ENV; read -r BASE_URL; } <<<"${ROUTE}"
+echo "[agent] ${HERMES_MODEL_ALIAS} -> ${ENDPOINT} / ${MODEL}"
+
+if [ -n "${KEY_ENV}" ]; then
+    if [ -z "${!KEY_ENV:-}" ]; then
+        # Report the name the operator can act on. docker-compose.yml maps .env's
+        # ANTHROPIC_API_KEY to the container's RAYLINE_ANTHROPIC_API_KEY, so naming
+        # the container variable would send them looking for something not in .env.
+        DOTENV_NAME=$(printf '%s' "${KEY_ENV}" | sed 's/^RAYLINE_ANTHROPIC_/ANTHROPIC_/; s/^RAYLINE_OPENAI_/OPENAI_/; s/^RAYLINE_OPENROUTER_/OPENROUTER_/')
+        echo "[agent] FATAL: ${ENDPOINT} needs ${DOTENV_NAME}, and it is empty." >&2
+        echo "[agent] Set it in .env and re-run ./pingpong up, or choose another" >&2
+        echo "[agent] endpoint with ./pingpong model." >&2
+        exit 1
+    fi
     echo "[agent] credential: ${KEY_ENV} is set"
+else
+    # A keyless endpoint is a local one, and "no key to check" must not become
+    # "nothing to check" — that is how the default install fails on a host with
+    # no ollama: silently, at the first request of the first round.
+    echo "[agent] ${ENDPOINT} needs no credential; checking it answers instead"
+    if ! curl -s -o /dev/null --max-time 5 "${BASE_URL}"; then
+        echo "[agent] FATAL: nothing answers at ${BASE_URL}." >&2
+        echo "[agent] ${ENDPOINT} is a model on this machine, not a service in the" >&2
+        echo "[agent] stack: install ollama (https://ollama.com), start it, and" >&2
+        echo "[agent] pull the model — or switch to a hosted provider with" >&2
+        echo "[agent] ./pingpong model." >&2
+        exit 1
+    fi
+    # /api/tags is ollama's. A keyless endpoint that is something else answers
+    # differently, and then there is nothing more to check here.
+    TAGS=$(curl -s --max-time 5 "${BASE_URL}/api/tags" 2>/dev/null || true)
+    if printf '%s' "${TAGS}" | jq -e '.models' >/dev/null 2>&1; then
+        if ! printf '%s' "${TAGS}" | jq -e --arg m "${MODEL}" \
+             '.models[] | select(.name == $m or .model == $m)' >/dev/null 2>&1; then
+            echo "[agent] FATAL: ollama answers, but has no model '${MODEL}'." >&2
+            echo "[agent] A stock tag is not enough — the context window has to be" >&2
+            echo "[agent] pinned or Hermes' tool definitions are truncated out of" >&2
+            echo "[agent] the prompt and the model narrates commands instead of" >&2
+            echo "[agent] calling them:" >&2
+            echo "[agent]   printf 'FROM <base>\\nPARAMETER num_ctx 32768\\n' > Modelfile" >&2
+            echo "[agent]   ollama create ${MODEL} -f Modelfile" >&2
+            exit 1
+        fi
+        echo "[agent] ollama has ${MODEL}"
+    fi
 fi
 
 # ANTHROPIC_BASE_URL, set as image ENV, is what actually redirects `hermes -z` —

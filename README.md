@@ -52,18 +52,23 @@ Neither the code nor `.env` names a model. Both live in one file:
 ```jsonc
 // rayline/pingpong.json
 "model_routes": {
-  "reviewer-brain": { "model": "rayline-router" },
-  "coder-brain":    { "model": "rayline-router" }
+  "reviewer-brain": { "endpoint": "ollama-local", "model": "qwen3.5:9b-32k" },
+  "coder-brain":    { "endpoint": "ollama-local", "model": "qwen3.5:9b-32k" }
 }
 ```
 
 Those keys are arbitrary aliases, not model ids. Each agent requests its role
 alias and Rayline resolves it. Changing a brain is a one-line edit here — no code
-change, no rebuild. `rayline-router` lets Rayline pick per request; name a real
-model instead (`gpt-5.6-terra`, `z-ai/glm-5.2`, …) to pin one.
+change, no rebuild.
 
-Five endpoints ship in that file — `rayline-cloud`, `anthropic-direct`,
-`openai-direct`, `openrouter` and `ollama-local` — so switching provider is a
+**Both roles ship on ollama**, the one endpoint that needs no credential, so a
+fresh clone asks for no key and nobody pays for a provider they did not choose.
+The cost is that it needs [ollama](https://ollama.com) on the host with the model
+pulled — so the agent checks precisely that at startup, rather than letting the
+first round discover it.
+
+Five endpoints ship in that file — `ollama-local`, `rayline-cloud`,
+`anthropic-direct`, `openai-direct` and `openrouter` — so switching provider is a
 line in the alias, not new plumbing. Each names the credential it draws on, and
 the agent reports at startup which one it needs and whether it is set, rather
 than failing a round half an hour later.
@@ -165,12 +170,12 @@ SETUP.md                  standing an instance up, once per instance
 
 ## Setup
 
-You need Docker with Compose, and a Rayline router key (`rlk-…`) from
-[platform.rayline.ai/keys](https://platform.rayline.ai/keys). Everything else runs
-in containers.
+You need Docker with Compose, and somewhere for the agents to think — out of the
+box that is [ollama](https://ollama.com) on this host, no key anywhere. Everything
+else runs in containers.
 
 ```bash
-cp .env.sample .env        # fill in RAYLINE_ROUTER_API_KEY
+cp .env.sample .env        # no key needed yet
 ./pingpong up              # builds the images; first run pulls a lot
 ./pingpong accounts        # the admin, the two bots and their tokens, and you
 ./pingpong up              # again, so the engine picks those up

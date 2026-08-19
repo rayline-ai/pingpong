@@ -10,20 +10,18 @@ every repository you add.
 
 ## Starting the stack
 
-You need Docker with Compose, and one model credential. Both roles ship pointed
-at Rayline's cloud router, so that is a router key (`rlk-…`) from
-[platform.rayline.ai/keys](https://platform.rayline.ai/keys) unless you repoint
-them — `rayline/pingpong.json` also carries endpoints for Anthropic and OpenAI
-directly, for OpenRouter, and for a local model through ollama, which is the one
-option that needs something on the host rather than a key. See
+You need Docker with Compose, and somewhere for the two agents to think. Both
+roles ship pointed at `ollama-local`, so out of the box that is
+[ollama](https://ollama.com) running on this host with the model pulled, and no
+key anywhere. If you would rather rent the thinking, `rayline/pingpong.json`
+carries four more endpoints — Rayline's cloud router, Anthropic and OpenAI
+directly, and OpenRouter — and each names the one key it draws on. See
 [Models](README.md#models) for what each costs you.
 
-Whichever you choose, the key goes in `.env` under the conventional name for its
-provider, and the agent tells you at startup if the one its role needs is empty.
-Everything else runs in containers.
+Nothing else touches the host; everything else runs in containers.
 
 ```bash
-cp .env.sample .env        # fill in RAYLINE_ROUTER_API_KEY
+cp .env.sample .env        # no key needed yet
 ./pingpong up              # builds the images; first run pulls a lot
 ```
 

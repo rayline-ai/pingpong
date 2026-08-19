@@ -8,17 +8,27 @@
     "what keeps the two roles independently retargetable: point one at a concrete",
     "model and the other elsewhere, and nothing outside this file changes.",
     "",
-    "Both default to `rayline-router`, which is not a model but the cloud-side",
-    "auto-router at api.rayline.ai — it picks per request (observed choosing",
-    "deepseek/deepseek-v4-flash for a trivial prompt). Note the trade: the concrete",
-    "model is no longer visible in the local rld log, which reports only",
-    "`selected=rayline-router`, and the reviewer and coder can land on the same",
-    "model, so they may share its blind spots. Pin both to different models if that",
-    "matters more to you than the routing.",
+    "DO NOT HAND-EDIT THE ROUTES BELOW unless you want to: `./pingpong model`",
+    "writes them, checks the model against the endpoint's list, and asks for the",
+    "key that choice needs. Everything else in this file is yours.",
+    "",
+    "Both roles ship on `ollama-local`, the only endpoint here that needs no",
+    "credential — so a fresh clone asks for no key at all, and nobody pays for a",
+    "provider they never chose. The cost is that it needs ollama on the host with",
+    "the model pulled, and the agent's entrypoint checks exactly that at start",
+    "rather than letting the first round discover it.",
+    "",
+    "`rayline-router` on the rayline-cloud endpoint is the other end of that trade:",
+    "not a model but the cloud-side auto-router at api.rayline.ai, picking per",
+    "request (observed choosing deepseek/deepseek-v4-flash for a trivial prompt).",
+    "It needs a key, and the concrete model stops being visible in the local rld",
+    "log, which then reports only `selected=rayline-router`. The reviewer and coder",
+    "can also land on the same model there, so they may share its blind spots.",
     "",
     "`routes.main` is the fallback for any request that names neither alias, and",
-    "`routes.subagent` covers delegated work. Both are on `rayline-router` too, so",
-    "every leg is auto-routed unless you pin it.",
+    "`routes.subagent` covers delegated work. `./pingpong model` moves them with",
+    "the roles when both roles agree, and leaves them alone when they do not —",
+    "there is one file for two containers, so there is no per-role answer to give.",
     "",
     "CREDENTIALS ARE NAMED `RAYLINE_<PROVIDER>_API_KEY` INSIDE THE AGENT, AND",
     "SOMETHING ELSE IN .env. docker-compose.yml is the mapping, one line each:",
@@ -142,24 +152,24 @@
   ],
   "routes": {
     "main": {
-      "endpoint": "rayline-cloud",
-      "model": "rayline-router",
+      "endpoint": "ollama-local",
+      "model": "qwen3.5:9b-32k",
       "router": "rayline-local"
     },
     "subagent": {
-      "endpoint": "rayline-cloud",
-      "model": "rayline-router",
+      "endpoint": "ollama-local",
+      "model": "qwen3.5:9b-32k",
       "router": "rayline-local"
     },
     "model_routes": {
       "reviewer-brain": {
-        "endpoint": "rayline-cloud",
-        "model": "rayline-router",
+        "endpoint": "ollama-local",
+        "model": "qwen3.5:9b-32k",
         "router": "rayline-local"
       },
       "coder-brain": {
-        "endpoint": "rayline-cloud",
-        "model": "rayline-router",
+        "endpoint": "ollama-local",
+        "model": "qwen3.5:9b-32k",
         "router": "rayline-local"
       }
     }
