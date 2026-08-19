@@ -64,8 +64,15 @@ ENV ANTHROPIC_API_KEY="sk-ant-rayline-injector-placeholder"
 # ENV, not compose env, for the same reason as the key: `docker exec` inherits it.
 ENV ANTHROPIC_BASE_URL="http://127.0.0.1:20809"
 
+# Both ENV lines above are right for router mode and wrong for a subscription,
+# where the key outranks the credential file in Hermes' own resolver and the base
+# URL points the OAuth bearer at the injector. Nothing that runs inside the
+# container can unset them for a later `docker exec` — so the engine calls
+# `hermes-run` rather than `hermes`, and that script is the one place the
+# difference lives.
 COPY docker/agent-entrypoint.sh /usr/local/bin/agent-entrypoint.sh
-RUN chmod +x /usr/local/bin/agent-entrypoint.sh
+COPY docker/hermes-run.sh /usr/local/bin/hermes-run
+RUN chmod +x /usr/local/bin/agent-entrypoint.sh /usr/local/bin/hermes-run
 
 WORKDIR /work
 ENTRYPOINT ["/usr/local/bin/agent-entrypoint.sh"]

@@ -1,0 +1,31 @@
+# Overlay for REVIEWER_MODE=claude-sub. `pingpong up` adds it with a second -f
+# when .env asks for that mode; it does nothing on its own and is not part of the
+# default stack.
+#
+# Four overlay files rather than two, because a mount cannot be made conditional
+# inside one: compose can interpolate a mount's *value* but not its presence, so
+# a single claude-sub file would put /credentials into the coder as well — and
+# the codex-sub pair is worse, since it would move a router-mode agent's Hermes
+# home onto an empty volume. One file per role per mode, and `up` adds only the
+# ones the two modes actually call for.
+#
+# All this does is put the host's Claude login inside the reviewer. There is no
+# router in this mode: Hermes reads ~/.claude/.credentials.json itself, so what
+# it needs is the directory, not a key.
+#
+# Read-write, deliberately. The credential expires and Hermes refreshes it IN
+# PLACE — which is the whole reason this mode can share the host's login at all,
+# and why codex-sub cannot (see reviewer.codex-sub.yml). A read-only mount would
+# work until it silently did not: once per token lifetime, as a 401 in the middle
+# of a round.
+#
+# CREDENTIALS_DIR is written into .env by `up` (src/subscription.py), not set by
+# hand: compose interpolates .env and cannot expand `~`, and $HOME is routinely
+# unset on Windows. One value serves both roles, because one Claude account is
+# one login — the two roles share the credential, not the model.
+
+services:
+
+  reviewer:
+    volumes:
+      - ${CREDENTIALS_DIR:?set REVIEWER_MODE=claude-sub in .env and run ./pingpong up, which fills this in}:/credentials

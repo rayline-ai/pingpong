@@ -120,6 +120,69 @@ resolved to and whether what it needs is there: the named key, or, for ollama,
 that the host answers and has the model. `./pingpong doctor` shows the same two
 lines afterwards.
 
+## On a subscription instead
+
+Everything above buys tokens with a key. If you already pay for Claude or for
+ChatGPT, `REVIEWER_MODE` and `CODER_MODE` in `.env` put that role on the
+subscription instead and take Rayline out of its requests entirely — no router,
+and `rayline/pingpong.json` is not read for it.
+
+**Set per role, and they need not match.** The point of this project is that the
+two agents are not the same brain, so the mode is one more thing to split rather
+than the one place that collapses them:
+
+```ini
+# One of each, which keeps the two roles genuinely apart.
+REVIEWER_MODE=codex-sub
+REVIEWER_MODEL=gpt-5.6-terra
+CODER_MODE=claude-sub
+CODER_MODEL=claude-sonnet-5
+```
+
+```ini
+# Or one on a subscription and the other still routed by Rayline. Leave the
+# routed role's MODEL empty and pick its brain with `./pingpong model`.
+REVIEWER_MODE=codex-sub
+REVIEWER_MODEL=gpt-5.6-terra
+CODER_MODE=router
+```
+
+The `MODEL` is required for a role on a subscription and unused for one on the
+router: with no router there is nothing to turn `reviewer-brain` into a real
+model id, so Hermes needs the id itself.
+
+`claude-sub` needs nothing else: run `claude` on this host once and sign in, and
+`up` mounts that login into whichever agents are on it. The credential is
+refreshed in place, so a refresh inside a container is a refresh for you — and
+one account serves both roles if you put both on it.
+
+`codex-sub` needs one more step, after `up`:
+
+```bash
+./pingpong login           # a device code per agent — open the URL, enter the code
+```
+
+That is not an oversight. Codex rotates its refresh token on every refresh and
+does not write the new one back, so borrowing `~/.codex` the way `claude-sub`
+borrows `~/.claude` would work exactly once and then leave *your* `codex` command
+signed out. Hermes could not read that file anyway — it keeps credentials in its
+own format, and `hermes import-agent codex` states that credentials are never
+imported. Each agent gets a session of its own, kept in `~/.pingpong/hermes-<role>`
+on the host, so the sign-in survives a restart, a rebuild and `down -v` alike. `./pingpong login` only ever touches the roles
+actually on `codex-sub`, and says so about the ones that are not. Use
+`gpt-5.6-terra` and not `gpt-5.6-codex` — a ChatGPT account is refused for every
+`-codex` id.
+
+What a subscription costs you: that role's every round counts against your own
+plan's limits rather than a metered key. Check the plan's terms before leaving it
+running unattended. And if you put **both** roles on one subscription, the review
+and the fix it asks for come from the same model and will agree with each other
+more than they should — it works, and it is a fine place to start, but read the
+verdicts knowing that.
+
+`./pingpong doctor` prints each role's mode and brain, and for a role on
+`codex-sub` whether that agent is signed in.
+
 ## Ports and address
 
 Forgejo is on **23000**, the engine on **23080**, Forgejo's SSH on **23022** —

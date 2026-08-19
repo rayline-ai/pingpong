@@ -108,11 +108,26 @@ def route(cfg, role):
     return entry.get("endpoint"), entry.get("model")
 
 
-def unset_roles(cfg):
+def unset_roles(cfg, only=None):
     """The roles that have not been pointed at anything. Ships as both of them,
     deliberately: a shipped default is a decision taken on someone's behalf, and
-    the one thing this repo cannot know is which models are on their host."""
-    return [role for role in ("reviewer", "coder") if not route(cfg, role)[0]]
+    the one thing this repo cannot know is which models are on their host.
+
+    `only` narrows it to the roles this question applies to. A role on a
+    subscription has no route here and is not supposed to have one — counting it
+    as unchosen would refuse to start a stack that is perfectly configured."""
+    roles = ("reviewer", "coder") if only is None else only
+    return [role for role in ("reviewer", "coder")
+            if role in roles and not route(cfg, role)[0]]
+
+
+def role_mode(role):
+    """How this role gets its brain, as `.env` records it.
+
+    Read straight from the file rather than through `subscription`, which
+    imports this module: `models` is the piece that has to work with nothing
+    else loaded, and a one-line reader is cheaper than untangling that."""
+    return (env_value("%s_MODE" % role.upper()) or "router").strip() or "router"
 
 
 def set_route(cfg, role, endpoint_id, model):
@@ -309,7 +324,15 @@ def env_set(key, value, path=None, backup=None, stamp=None):
 
 def _show(cfg, out):
     out("")
+    routed = []
     for role in ("reviewer", "coder"):
+        # A role on a subscription is not routed at all, and saying what its
+        # alias would resolve to would name a model it demonstrably is not using.
+        mode = role_mode(role)
+        if mode != "router":
+            out("  %-9s %s — not routed (%s_MODEL in .env)" % (role, mode, role.upper()))
+            continue
+        routed.append(role)
         endpoint_id, model = route(cfg, role)
         if not endpoint_id:
             out("  %-9s not chosen yet" % role)
@@ -320,7 +343,7 @@ def _show(cfg, out):
         else:
             state = "no key needed"
         out("  %-9s %s / %s   (%s)" % (role, endpoint_id, model, state))
-    if unset_roles(cfg):
+    if unset_roles(cfg, routed):
         out("")
         out("  Run `./pingpong model` to choose. Nothing ships chosen, so there")
         out("  is no default to weigh up and `up` will not start without this.")
@@ -510,7 +533,7 @@ def main(argv=None, ask=None, out=None):
         out("usage: pingpong model                      choose interactively")
         out("       pingpong model <role> <endpoint> <model>")
         out("       pingpong model --show")
-        out("       pingpong model --check         exit 1 if a role is unchosen")
+        out("       pingpong model --check [role...]   exit 1 if one is unchosen")
         out("")
         out("  role      reviewer | coder")
         out("  endpoint  an id from rayline/pingpong.json")
@@ -524,8 +547,14 @@ def main(argv=None, ask=None, out=None):
 
     if argv and argv[0] == "--check":
         # What `up` gates on. Quiet when there is nothing to say, so it can run
-        # on every start without becoming noise.
-        missing = unset_roles(cfg)
+        # on every start without becoming noise. The caller names the roles
+        # because only it knows which of them are on the router at all; unnamed
+        # means both, which is what a person typing this by hand means.
+        only = argv[1:] if len(argv) > 1 else None
+        for role in only or ():
+            if role not in ROLES:
+                raise ModelError("no role %r — there is reviewer and coder" % role)
+        missing = unset_roles(cfg, only)
         if not missing:
             return 0
         out("No brain chosen for the %s." % " or the ".join(missing))
