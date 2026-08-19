@@ -1,0 +1,14 @@
+# Overlay for CODER_MODE=codex-sub. The coder's half of the pair; see
+# reviewer.codex-sub.yml for why nothing from the host is mounted, why the
+# session lives in a Hermes home of its own, and why there is a file per role.
+
+services:
+
+  coder:
+    environment:
+      HERMES_HOME: /hermes
+    volumes:
+      - hermes-coder:/hermes
+
+volumes:
+  hermes-coder:

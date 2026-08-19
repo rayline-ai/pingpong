@@ -1,13 +1,13 @@
-# Overlay for AGENT_MODE=codex-sub. `pingpong up` adds it with a second -f when
-# .env asks for that mode; it does nothing on its own and is not part of the
+# Overlay for REVIEWER_MODE=codex-sub. `pingpong up` adds it with a second -f
+# when .env asks for that mode; it does nothing on its own and is not part of the
 # default stack.
 #
 # Nothing from the host is mounted, and that is the point. Codex rotates its
 # refresh token on every refresh and Hermes does not write the new one back to
 # ~/.codex, so sharing that file would work exactly once and then leave the
 # operator's own `codex` CLI holding a revoked token — a failure that lands on
-# their terminal, not on this stack's logs. Each agent gets a session of its
-# own instead, created once by `./pingpong login`.
+# their terminal, not on this stack's logs. The agent gets a session of its own
+# instead, created once by `./pingpong login`.
 #
 # HERMES_HOME, not a mount over /root/.hermes. Hermes writes auth.json by atomic
 # replace, so nothing narrower than a directory survives a refresh — and the
@@ -18,6 +18,11 @@
 # It is in `environment:` rather than exported by the entrypoint because
 # `docker exec` does not inherit the entrypoint's shell — and `docker exec` is
 # how every round actually runs.
+#
+# Per role, and never applied to a role that is not in this mode: doing so would
+# move that agent's Hermes home onto an empty volume, which looks like a working
+# container right up until it is asked to think. See reviewer.claude-sub.yml for
+# why there are four of these files.
 
 services:
 
@@ -25,17 +30,11 @@ services:
     environment:
       HERMES_HOME: /hermes
     volumes:
+      # A volume of its own, so that if the coder is on codex-sub too the two
+      # hold separate OAuth grants. One shared grant would put both agents on a
+      # single rotating refresh token, and whichever refreshed second would find
+      # its copy revoked.
       - hermes-reviewer:/hermes
-
-  coder:
-    environment:
-      HERMES_HOME: /hermes
-    volumes:
-      # One volume per role, so the two hold separate OAuth grants. A shared one
-      # would put both agents on a single rotating refresh token, and whichever
-      # refreshed second would find its copy revoked.
-      - hermes-coder:/hermes
 
 volumes:
   hermes-reviewer:
-  hermes-coder:

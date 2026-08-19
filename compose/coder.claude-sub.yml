@@ -1,0 +1,9 @@
+# Overlay for CODER_MODE=claude-sub. The coder's half of the pair; see
+# reviewer.claude-sub.yml for why the mount is read-write, why the path comes
+# from .env, and why there is a file per role rather than one for the mode.
+
+services:
+
+  coder:
+    volumes:
+      - ${CREDENTIALS_DIR:?set CODER_MODE=claude-sub in .env and run ./pingpong up, which fills this in}:/credentials

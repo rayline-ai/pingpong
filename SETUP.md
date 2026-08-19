@@ -123,18 +123,38 @@ lines afterwards.
 ## On a subscription instead
 
 Everything above buys tokens with a key. If you already pay for Claude or for
-ChatGPT, `AGENT_MODE` in `.env` puts the agents on that instead and takes Rayline
-out of the request entirely — there is no router, and `rayline/pingpong.json` is
-not read at all.
+ChatGPT, `REVIEWER_MODE` and `CODER_MODE` in `.env` put that role on the
+subscription instead and take Rayline out of its requests entirely — no router,
+and `rayline/pingpong.json` is not read for it.
+
+**Set per role, and they need not match.** The point of this project is that the
+two agents are not the same brain, so the mode is one more thing to split rather
+than the one place that collapses them:
 
 ```ini
-AGENT_MODE=claude-sub          # or codex-sub
-SUBSCRIPTION_MODEL=claude-sonnet-4-6
+# One of each, which keeps the two roles genuinely apart.
+REVIEWER_MODE=codex-sub
+REVIEWER_MODEL=gpt-5.5
+CODER_MODE=claude-sub
+CODER_MODEL=claude-sonnet-4-6
 ```
 
+```ini
+# Or one on a subscription and the other still routed by Rayline. Leave the
+# routed role's MODEL empty and pick its brain with `./pingpong model`.
+REVIEWER_MODE=codex-sub
+REVIEWER_MODEL=gpt-5.5
+CODER_MODE=router
+```
+
+The `MODEL` is required for a role on a subscription and unused for one on the
+router: with no router there is nothing to turn `reviewer-brain` into a real
+model id, so Hermes needs the id itself.
+
 `claude-sub` needs nothing else: run `claude` on this host once and sign in, and
-`up` mounts that login into both agents. The credential is refreshed in place, so
-a refresh inside a container is a refresh for you.
+`up` mounts that login into whichever agents are on it. The credential is
+refreshed in place, so a refresh inside a container is a refresh for you — and
+one account serves both roles if you put both on it.
 
 `codex-sub` needs one more step, after `up`:
 
@@ -146,18 +166,19 @@ That is not an oversight. Codex rotates its refresh token on every refresh and
 does not write the new one back, so borrowing `~/.codex` the way `claude-sub`
 borrows `~/.claude` would work exactly once and then leave *your* `codex` command
 signed out. Each agent gets a session of its own, kept in a volume so the sign-in
-is once and not once per restart. Use `gpt-5.5` and not `gpt-5.5-codex` — a
-ChatGPT account is refused for every `-codex` id.
+is once and not once per restart. `./pingpong login` only ever touches the roles
+actually on `codex-sub`, and says so about the ones that are not. Use `gpt-5.5`
+and not `gpt-5.5-codex` — a ChatGPT account is refused for every `-codex` id.
 
-What a subscription costs you, either way: **one account, two agents.** Both
-roles run the same model, so the review and the fix it asks for come from the
-same brain and agree with each other more than they should; every round counts
-against one subscription's limits; and the per-role split that the section above
-is entirely about stops existing. Check your plan's terms before leaving it
-running unattended.
+What a subscription costs you: that role's every round counts against your own
+plan's limits rather than a metered key. Check the plan's terms before leaving it
+running unattended. And if you put **both** roles on one subscription, the review
+and the fix it asks for come from the same model and will agree with each other
+more than they should — it works, and it is a fine place to start, but read the
+verdicts knowing that.
 
-`./pingpong doctor` prints the mode, and in `codex-sub` whether each agent is
-signed in.
+`./pingpong doctor` prints each role's mode and brain, and for a role on
+`codex-sub` whether that agent is signed in.
 
 ## Ports and address
 

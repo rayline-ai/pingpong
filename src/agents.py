@@ -85,7 +85,7 @@ def fix(cfg, worktree, runs_dir, prompt, round_no):
 
 
 def codex_signed_in(name):
-    """Whether this agent holds a ChatGPT session, for AGENT_MODE=codex-sub.
+    """Whether this agent holds a ChatGPT session, for a role on codex-sub.
 
     Best-effort, for `doctor` alone. The session is made by `pingpong login` and
     lives in a volume, so unlike every other credential in this project there is

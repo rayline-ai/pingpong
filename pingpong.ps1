@@ -10,23 +10,34 @@ try {
     $rest = @()
     if ($Args.Count -gt 1) { $rest = $Args[1..($Args.Count - 1)] }
 
-    # AGENT_MODE decides both which compose files to use and which pre-flight
-    # check applies, and both happen before compose runs — so this reads .env
-    # rather than letting compose interpolate it.
-    $mode = 'router'
-    if (Test-Path '.env') {
-        $line = Select-String -Path '.env' -Pattern '^AGENT_MODE=' | Select-Object -Last 1
-        if ($line) { $mode = $line.Line -replace '^AGENT_MODE=\s*', '' -replace '["'']', '' }
+    # REVIEWER_MODE and CODER_MODE decide both which compose files to use and
+    # which pre-flight checks apply, and both happen before compose runs — so
+    # this reads .env rather than letting compose interpolate it.
+    function Get-RoleMode([string]$role) {
+        $value = ''
+        if (Test-Path '.env') {
+            $pattern = "^$($role.ToUpper())_MODE="
+            $line = Select-String -Path '.env' -Pattern $pattern | Select-Object -Last 1
+            if ($line) { $value = $line.Line -replace $pattern, '' -replace '["'']', '' }
+        }
+        if ($value) { return $value.Trim() } else { return 'router' }
     }
-    if (-not $mode) { $mode = 'router' }
-    $subscription = $mode -in @('claude-sub', 'codex-sub')
+
+    $modes = @{}
+    foreach ($role in @('reviewer', 'coder')) { $modes[$role] = Get-RoleMode $role }
+    $routed = @($modes.Keys | Where-Object { $modes[$_] -eq 'router' } | Sort-Object)
 
     # A second -f replaces the default list rather than adding to it, so the base
-    # file is named explicitly. One overlay per subscription mode: claude-sub
-    # mounts the host's login, codex-sub deliberately mounts nothing from the
-    # host and puts Hermes' own session on a volume.
+    # file is named explicitly. One overlay per role per subscription mode:
+    # claude-sub mounts the host's login, codex-sub deliberately mounts nothing
+    # from the host and puts Hermes' own session on a volume — and a file naming
+    # both services would apply to a role that is on the router.
     $files = @('-f', 'docker-compose.yml')
-    if ($subscription) { $files += @('-f', "docker-compose.$mode.yml") }
+    foreach ($role in @('reviewer', 'coder')) {
+        if ($modes[$role] -in @('claude-sub', 'codex-sub')) {
+            $files += @('-f', "compose/$role.$($modes[$role]).yml")
+        }
+    }
 
     switch ($Args[0]) {
         'up'   {
@@ -39,14 +50,21 @@ try {
                 if ($found) { $python = $found.Source; break }
             }
             if ($python -and (Test-Path '.env')) { & $python -m src.address }
-            # These two do refuse, and only one of them applies. A brain has to
-            # come from somewhere and starting without one buys nothing: the
+            # These two do refuse, and with the roles on different modes BOTH can
+            # apply — one role's brain missing is as fatal as both. A brain has
+            # to come from somewhere and starting without one buys nothing: the
             # stack comes up and dies at the first review, the furthest possible
             # place from the cause.
             if ($python) {
-                if ($subscription) { & $python -m src.subscription }
-                else               { & $python -m src.models --check }
+                & $python -m src.subscription
                 if ($LASTEXITCODE -ne 0) { exit 1 }
+                # Named explicitly, and skipped when there are none: unargued,
+                # --check asks about both roles, and a role on a subscription is
+                # supposed to have no route.
+                if ($routed.Count -gt 0) {
+                    & $python -m src.models --check @routed
+                    if ($LASTEXITCODE -ne 0) { exit 1 }
+                }
             }
             docker compose @files up -d --build @rest
         }
@@ -72,7 +90,7 @@ try {
             Write-Host 'usage: pingpong up|down|logs'
             Write-Host '       pingpong accounts [--user someone@example.com]'
             Write-Host '       pingpong model [reviewer|coder <endpoint> <model>]'
-            Write-Host '       pingpong login              (AGENT_MODE=codex-sub only)'
+            Write-Host '       pingpong login              (roles on codex-sub only)'
             Write-Host '       pingpong onboard ../some-repo'
             Write-Host '       pingpong doctor'
             Write-Host '       pingpong round owner/repo#123'

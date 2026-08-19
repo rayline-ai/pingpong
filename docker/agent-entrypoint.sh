@@ -2,7 +2,11 @@
 # Give this container a brain, write the Hermes config that reaches it, then idle
 # so the API can `docker exec hermes-run -z ...` per round.
 #
-# Three ways to have a brain, and they share nothing but the idle at the end:
+# Three ways to have a brain, and they share nothing but the idle at the end.
+# AGENT_MODE, not REVIEWER_MODE or CODER_MODE: this container does not know which
+# role it is running, and compose renames the role's setting on the way in. That
+# is what lets the two roles be on different modes without two of everything
+# here.
 #
 #   router      Rayline routes every request. rayline/pingpong.json picks the
 #               model per role; credentials belong to the router, not to Hermes.
@@ -24,7 +28,7 @@ RAYLINE_CONFIG=${RAYLINE_CONFIG:-/etc/pingpong/rayline.json}
 INJECTOR=${INJECTOR:-http://127.0.0.1:20809}
 CREDENTIALS=${CREDENTIALS:-/credentials}
 # Where Hermes keeps config.yaml and, in codex-sub, its OAuth session. The
-# default is the image's own populated home; docker-compose.codex-sub.yml points
+# default is the image's own populated home; compose/<role>.codex-sub.yml points
 # it at a volume instead, and says there why that is a separate directory rather
 # than a mount over this one.
 HERMES_HOME=${HERMES_HOME:-/root/.hermes}
@@ -52,13 +56,27 @@ mkdir -p "${HERMES_HOME}"
 # claude-sub / codex-sub
 # ---------------------------------------------------------------------------
 
+# The role's own settings in .env, for messages. This container is deliberately
+# told only AGENT_MODE and SUBSCRIPTION_MODEL — it does not know which role it is
+# — but the operator has to edit REVIEWER_* or CODER_*, so naming the wrong one
+# would send them looking for a line that is not there. The alias is the one
+# thing here that does say which role this is.
+env_prefix() {
+    case "${HERMES_MODEL_ALIAS}" in
+        coder-*) echo CODER ;;
+        *)       echo REVIEWER ;;
+    esac
+}
+
 # Both subscription modes need a real model id, and neither has a router to get
 # one from: routes.model_routes is Rayline's, and Rayline is not in this path.
 # Without this Hermes asks the provider for a model literally called
 # "reviewer-brain".
 require_model() {
+    local prefix
+    prefix=$(env_prefix)
     if [ -z "${SUBSCRIPTION_MODEL:-}" ]; then
-        echo "[agent] FATAL: AGENT_MODE=${AGENT_MODE} but SUBSCRIPTION_MODEL is empty." >&2
+        echo "[agent] FATAL: ${prefix}_MODE=${AGENT_MODE} but ${prefix}_MODEL is empty." >&2
         echo "[agent] Nothing resolves a role alias without a router. Set the real" >&2
         echo "[agent] model id in .env and re-run ./pingpong up." >&2
         exit 1
@@ -88,8 +106,8 @@ start_claude_sub() {
 
     if [ ! -d "${CREDENTIALS}" ]; then
         echo "[agent] FATAL: nothing is mounted at ${CREDENTIALS}." >&2
-        echo "[agent] AGENT_MODE=claude-sub needs this host's Claude login. Start" >&2
-        echo "[agent] with ./pingpong up, which adds docker-compose.claude-sub.yml" >&2
+        echo "[agent] $(env_prefix)_MODE=claude-sub needs this host's Claude login." >&2
+        echo "[agent] Start with ./pingpong up, which adds the overlay for this role" >&2
         echo "[agent] and fills CREDENTIALS_DIR in .env." >&2
         exit 1
     fi
@@ -140,8 +158,8 @@ start_codex_sub() {
         echo "[agent] FATAL: codex-sub needs HERMES_HOME on a volume, and it is" >&2
         echo "[agent] the image's own home. The session would be lost on every" >&2
         echo "[agent] restart and ./pingpong login would have to be run again each" >&2
-        echo "[agent] time. Start with ./pingpong up, which adds" >&2
-        echo "[agent] docker-compose.codex-sub.yml." >&2
+        echo "[agent] time. Start with ./pingpong up, which adds the overlay this" >&2
+        echo "[agent] role's $(env_prefix)_MODE calls for." >&2
         exit 1
     fi
 
@@ -160,7 +178,7 @@ start_codex_sub() {
     else
         echo "[agent] codex-sub: no ChatGPT session in ${HERMES_HOME}."
         echo "[agent] Run ./pingpong login on the host — it opens a device-code"
-        echo "[agent] sign-in for each agent. Rounds fail until it has."
+        echo "[agent] sign-in for each agent on this mode. Rounds fail until it has."
     fi
 
     write_subscription_config openai-codex
@@ -317,7 +335,7 @@ case "${AGENT_MODE}" in
     router)      start_router ;;
     claude-sub)  start_claude_sub ;;
     codex-sub)   start_codex_sub ;;
-    *)  echo "[agent] FATAL: AGENT_MODE='${AGENT_MODE}' is not a mode." >&2
+    *)  echo "[agent] FATAL: $(env_prefix)_MODE='${AGENT_MODE}' is not a mode." >&2
         echo "[agent] There is router, claude-sub and codex-sub." >&2
         exit 1 ;;
 esac

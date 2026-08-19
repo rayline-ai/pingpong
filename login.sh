@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# `pingpong login` — give each agent its own ChatGPT session, for AGENT_MODE=codex-sub.
+# `pingpong login` — give an agent its own ChatGPT session, for a role whose
+# REVIEWER_MODE / CODER_MODE is codex-sub.
 #
-#   pingpong login              sign in whichever agents have no session yet
+#   pingpong login              sign in whichever codex-sub agents have none yet
 #   pingpong login --force      sign in again even if they have one
 #   pingpong login reviewer     just that one
 #
@@ -36,38 +37,63 @@ while [ $# -gt 0 ]; do
             cat >&2 <<'EOF'
 usage: pingpong login [--force] [reviewer|coder]
 
-  Signs an agent in to ChatGPT with a device code, for AGENT_MODE=codex-sub.
-  With no arguments it does both agents, skipping any that already have a
-  session. --force signs in again regardless.
+  Signs an agent in to ChatGPT with a device code, for a role whose mode is
+  codex-sub. With no arguments it does every such role, skipping any that
+  already have a session. --force signs in again regardless.
 EOF
             exit 0 ;;
         *) die "unknown argument: $1" ;;
     esac
 done
 
-[ ${#SERVICES[@]} -gt 0 ] || SERVICES=(reviewer coder)
-
 # Only the assignment is read; the rest of .env is prose and secrets. Same
 # reading as the `pingpong` wrapper's, kept deliberately simple for that reason.
-MODE=router
-if [ -f .env ]; then
-    MODE=$(sed -n 's/^AGENT_MODE=[[:space:]]*//p' .env | tail -1 | tr -d "\"'\r")
-    MODE=${MODE:-router}
+role_mode() {
+    local value=""
+    if [ -f .env ]; then
+        value=$(sed -n "s/^$(echo "$1" | tr a-z A-Z)_MODE=[[:space:]]*//p" .env \
+                | tail -1 | tr -d "\"'\r")
+    fi
+    echo "${value:-router}"
+}
+
+# Per role, because the roles need not be on the same mode: signing in the coder
+# is no help to a reviewer on the router, and doing it silently would look like
+# the reviewer had been dealt with.
+explain() {
+    case "$(role_mode "$1")" in
+        claude-sub)
+            die "the $1 is on claude-sub and needs no login here — it reads the
+     Claude login this host already has. Run \`claude\` and sign in if it
+     cannot find one." ;;
+        *)
+            die "the $1 routes through Rayline and signs in with a key, not a
+     subscription. Set $(echo "$1" | tr a-z A-Z)_MODE=codex-sub in .env first, or use
+     ./pingpong model to choose its key-based brain." ;;
+    esac
+}
+
+if [ ${#SERVICES[@]} -gt 0 ]; then
+    # Named explicitly: say why that one is not eligible rather than skipping it.
+    for service in "${SERVICES[@]}"; do
+        [ "$(role_mode "${service}")" = "codex-sub" ] || explain "${service}"
+    done
+else
+    for service in reviewer coder; do
+        if [ "$(role_mode "${service}")" = "codex-sub" ]; then
+            SERVICES+=("${service}")
+        fi
+    done
+    [ ${#SERVICES[@]} -gt 0 ] || die "no role is on codex-sub. Set REVIEWER_MODE=codex-sub or
+     CODER_MODE=codex-sub in .env, run ./pingpong up, then try again."
 fi
 
-case "${MODE}" in
-    codex-sub) ;;
-    claude-sub)
-        die "AGENT_MODE=claude-sub needs no login here — the agents read the
-     Claude login this host already has. Run \`claude\` and sign in if
-     they cannot find one." ;;
-    *)
-        die "AGENT_MODE=${MODE} routes through Rayline and signs in with a key,
-     not a subscription. Set AGENT_MODE=codex-sub in .env first, or use
-     ./pingpong model to choose the key-based brains." ;;
-esac
-
-COMPOSE=(docker compose -f docker-compose.yml -f docker-compose.codex-sub.yml)
+# Only the overlays for the roles being signed in — the codex-sub file for a role
+# that is not on it would move that agent's Hermes home onto an empty volume.
+COMPOSE=(docker compose -f docker-compose.yml)
+for service in "${SERVICES[@]}"; do
+    COMPOSE+=(-f "compose/${service}.codex-sub.yml")
+done
 
 # Whether this agent already holds a grant. The credential_pool is what the
 # runtime selects from, so that is what counts as "signed in" — the older
