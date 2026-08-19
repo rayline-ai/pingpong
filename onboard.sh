@@ -23,7 +23,8 @@ usage() {
     cat >&2 <<'EOF'
 usage: pingpong onboard <path-to-repo> [--owner <login>] [--repo <name>]
 
-  <path>    a git repository on this machine, with at least one commit
+  <path>    a git repository on this machine, with at least one commit — its
+            root, not a subfolder of it
   --owner   Forgejo account to own it (default: matched from the repo's
             git config user.email)
   --repo    name on the instance (default: the folder's name)
@@ -59,10 +60,44 @@ API=http://$HOST:${API_PORT:-23080}
 REVIEWER=${REVIEWER_LOGIN:-pingpong-reviewer}
 CODER=${CODER_LOGIN:-pingpong-coder}
 
-git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1 \
-    || die "$TARGET is not a git repository"
+if ! git -C "$TARGET" rev-parse --git-dir >/dev/null 2>&1; then
+    if [ -z "$(ls -A "$TARGET")" ]; then
+        die "$TARGET is empty, so there is nothing to put on the instance. Onboard
+a folder that already holds the work: PingPong reviews history, and the first
+thing this does is push one."
+    fi
+    die "$TARGET is not a git repository, and the instance is fed by pushing:
+
+    git -C $TARGET init
+    git -C $TARGET add -A
+    git -C $TARGET commit -m 'Initial commit'
+
+Then run this again. Commit as the address your Forgejo account carries — Forgejo
+links a commit to an account by the author's email, and that match is how this
+picks the owner."
+fi
+
+# --show-toplevel rather than --git-dir alone: a subfolder of a repository
+# answers the check above through its parent, and every step after this one would
+# then act on the parent — the remote added to it, its HEAD pushed to main —
+# under a name taken from the subfolder. Nothing about that failure announces
+# itself.
+TOP=$(git -C "$TARGET" rev-parse --show-toplevel 2>/dev/null || true)
+[ -n "$TOP" ] || die "$TARGET is a bare repository. Onboard a working clone: this
+needs a work tree to copy AGENTS.md into and a HEAD to push."
+# Both sides through `cd`, because git prints C:/... on Windows where $TARGET is
+# /c/..., and comparing those as strings finds a difference that is not one.
+TOP=$(cd "$TOP" && pwd)
+[ "$TOP" = "$TARGET" ] || die "$TARGET is a subfolder of the repository at $TOP.
+Onboard that instead — a repository is what goes on the instance, and pushing
+from here would push all of $TOP under the name $(basename "$TARGET")."
+
 git -C "$TARGET" rev-parse HEAD >/dev/null 2>&1 \
-    || die "$TARGET has no commits — there would be nothing to push as main"
+    || die "$TARGET has no commits yet, and main is seeded from HEAD — there would
+be nothing to push. Commit first:
+
+    git -C $TARGET add -A
+    git -C $TARGET commit -m 'Initial commit'"
 
 [ -n "$REPO" ] || REPO=$(basename "$TARGET")
 
