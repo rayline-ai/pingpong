@@ -76,15 +76,17 @@ than failing a round half an hour later.
 ### Choosing them
 
 ```bash
-./pingpong model            # walks both roles through the endpoints and models
+./pingpong model            # asks for both roles; Enter keeps what is set
 ./pingpong model --show     # what each is on now, and whether its key is set
 ./pingpong model coder openai-direct gpt-5.6
 ```
 
-Same edit as by hand, with the three things a hand-edit gets wrong done for you:
+Same edit as by hand, with the four things a hand-edit gets wrong done for you:
 the endpoint has to exist, the key it names goes into `.env` in the same step,
-and `routes.main`/`routes.subagent` move with the roles only when both agree —
-there is one config for two containers, so a per-role answer does not exist.
+`routes.main`/`routes.subagent` move with the roles only when both agree — there
+is one config for two containers, so a per-role answer does not exist — and for a
+local endpoint the menu is checked against what your ollama actually has, marking
+what you are missing and printing the command to get it.
 
 It is instance-wide for that same reason: every repository the instance reviews
 gets the same two brains. And pointing both roles at one model costs you the
@@ -195,9 +197,9 @@ else runs in containers.
 ```bash
 cp .env.sample .env        # no key needed — but set FORGEJO_ROOT_URL to this
                            # machine's IP, which ships as a placeholder
+./pingpong model           # a brain for each agent; Enter keeps the local one
 ./pingpong up              # builds the images; first run pulls a lot
 ./pingpong accounts        # the admin, the two bots and their tokens, and you
-./pingpong model           # optional: put a role on a hosted model instead
 ./pingpong up              # again, so the engine picks those up
 ./pingpong doctor
 ```

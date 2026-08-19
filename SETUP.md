@@ -24,31 +24,59 @@ cp .env.sample .env        # no key needed yet
                            # then set FORGEJO_ROOT_URL — it ships as a
                            # placeholder, because the address other machines
                            # use is the one thing nothing can guess for you
+./pingpong model           # pick a brain for each agent; see below
 ./pingpong up              # builds the images; first run pulls a lot
 ```
 
-`up` is the only step that works before Forgejo exists — the rest of `.env` needs
-accounts and tokens that can only be minted once Forgejo has booted, which is why
-this is two passes.
+`model` comes first because `rld` reads its config once, when it starts: choose
+before the agents exist and `up` brings them up already on the right models,
+rather than needing to recreate them afterwards.
+
+`up` is then the only step that works before Forgejo exists — the rest of `.env`
+needs accounts and tokens that can only be minted once Forgejo has booted, which
+is why this is two passes.
 
 ## Choosing the brains
 
-Skip this and both roles run on ollama. To put either of them on a hosted model
-instead:
+Both agents need one, so `./pingpong model` asks twice — reviewer, then coder —
+and each question is a numbered menu of the endpoints in `rayline/pingpong.json`
+and the models on the one you pick:
 
-```bash
-./pingpong model            # walks both roles through the endpoints and models
-./pingpong model --show     # what each role is on now, and whether its key is set
+```
+== reviewer (currently ollama-local / qwen2.5-coder:7b-32k)
+  1) ollama-local     no key — a model on this host
+  2) rayline-cloud    needs RAYLINE_ROUTER_API_KEY
+  ...
+  endpoint [1]: ↵
+
+  1) qwen2.5-coder:7b-32k
+  2) qwen3.5:9b-32k      not on this host
+  ...
+  model [1]: ↵
 ```
 
-It writes `rayline/pingpong.json`, and then asks for whatever key that choice
-needs and writes that to `.env` — so the choice and its cost are one step rather
-than a config edit that fails at the next `up`. One role at a time, without the
-questions:
+**The default in brackets is what that role is on now, and Enter takes it.** So
+pressing Enter through both questions leaves the shipped answer in place: both
+roles on `ollama-local`, no key anywhere, thinking done by
+[ollama](https://ollama.com) on this host. Answer differently and it writes
+`rayline/pingpong.json`, then asks for whatever key that choice needs and writes
+*that* to `.env` — the choice and its cost in one step, rather than a config edit
+that fails at the next `up`.
+
+**`not on this host` is the list telling you the truth about your machine.** For a
+local endpoint the command asks your ollama what it actually has, because the
+models in the config are what this project suggests and say nothing about what
+you have pulled. Pick one you are missing and it prints the command to get it —
+which for a `-32k` tag is `ollama create` and not `ollama pull`, since that
+suffix means someone pinned the context window and there is no such tag upstream.
+If ollama is not running the marks are simply absent: it will not guess.
+
+The same thing without the questions, one role at a time, and what is set now:
 
 ```bash
 ./pingpong model coder openai-direct gpt-5.6
 ./pingpong model reviewer anthropic-direct claude-opus-5
+./pingpong model --show     # what each role is on now, and whether its key is set
 ```
 
 Two things are worth knowing before you pick:

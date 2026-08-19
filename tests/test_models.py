@@ -332,5 +332,45 @@ class TestShippedConfig(unittest.TestCase):
             self.assertIsNone(models.needed_key(self.cfg, role))
 
 
+class TestLocalModels(unittest.TestCase):
+    """What the host actually has, which the config's `models` list does not say."""
+
+    def test_container_hostname_is_rewritten_for_this_side(self):
+        # base_url is written for the agent containers. `pingpong model` runs on
+        # the host, where that name does not resolve.
+        self.assertEqual(models.host_url("http://host.docker.internal:11434"),
+                         "http://127.0.0.1:11434")
+        self.assertEqual(models.host_url("https://api.openai.com"),
+                         "https://api.openai.com")
+
+    def test_a_keyed_endpoint_is_never_probed(self):
+        # Nothing to ask and nowhere local to ask it; a hosted provider's catalog
+        # is not this command's business.
+        spec = {"id": "openai-direct", "base_url": "https://api.openai.com",
+                "api_key_env": "RAYLINE_OPENAI_API_KEY"}
+        self.assertIsNone(models.local_models(spec))
+
+    def test_nothing_listening_reads_as_unknown_not_as_empty(self):
+        # The difference matters: unknown offers every model without comment,
+        # empty would mark all of them missing.
+        spec = {"id": "ollama-local", "base_url": "http://127.0.0.1:1"}
+        self.assertIsNone(models.local_models(spec, timeout=1))
+
+    def test_a_pinned_tag_is_created_and_not_pulled(self):
+        # `ollama pull qwen2.5-coder:7b-32k` fails: there is no such upstream tag.
+        # The suffix means someone pinned the window, which is the point of it.
+        lines = []
+        models.pull_recipe("qwen2.5-coder:7b-32k", lines.append)
+        text = "\n".join(lines)
+        self.assertIn("ollama pull qwen2.5-coder:7b", text)
+        self.assertIn("PARAMETER num_ctx 32768", text)
+        self.assertIn("ollama create qwen2.5-coder:7b-32k -f Modelfile", text)
+
+    def test_a_stock_tag_is_just_pulled(self):
+        lines = []
+        models.pull_recipe("deepseek-r2:14b", lines.append)
+        self.assertEqual(lines, ["    ollama pull deepseek-r2:14b"])
+
+
 if __name__ == "__main__":
     unittest.main()

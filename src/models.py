@@ -14,6 +14,7 @@ import datetime
 import json
 import os
 import sys
+import urllib.request
 
 ROLES = {"reviewer": "reviewer-brain", "coder": "coder-brain"}
 
@@ -142,6 +143,58 @@ def describe(spec):
     return "needs %s" % DOTENV_NAMES.get(key_env, key_env)
 
 
+def host_url(base_url):
+    """The endpoint's address as reachable from *here*. base_url is written for
+    the agent containers, where the host is `host.docker.internal`; that name
+    does not resolve on the host itself."""
+    return (base_url or "").replace("host.docker.internal", "127.0.0.1")
+
+
+def local_models(spec, timeout=3):
+    """What a local ollama actually has, or None if it cannot be asked.
+
+    The menu otherwise lists tags from the config, which say what this project
+    suggests and nothing about what is on the machine — and the -32k ones are not
+    pullable at all, they are tags someone has to create. Better to say so while
+    the choice is being made than to let the agent discover it at startup.
+
+    None is not an empty list: "ollama is not running" and "ollama has nothing"
+    are different answers, and neither is a reason to refuse the choice."""
+    if spec.get("api_key_env"):
+        return None
+    url = host_url(spec.get("base_url")).rstrip("/") + "/api/tags"
+    try:
+        with urllib.request.urlopen(url, timeout=timeout) as response:
+            body = json.loads(response.read().decode("utf-8"))
+    except Exception:
+        # Unreachable, not ollama, not JSON — all the same answer here, and none
+        # of them is this command's business to diagnose.
+        return None
+    if not isinstance(body, dict) or not isinstance(body.get("models"), list):
+        return None
+    names = set()
+    for item in body["models"]:
+        for field in ("name", "model"):
+            if isinstance(item, dict) and isinstance(item.get(field), str):
+                names.add(item[field])
+    return names
+
+
+def pull_recipe(model, out):
+    """What to run to get a model the host does not have. A `-32k` tag has no
+    upstream to pull from: the suffix means someone pinned the context window,
+    which is the whole reason it is named that."""
+    base = model.rsplit("-32k", 1)[0] if model.endswith("-32k") else None
+    if base:
+        out("    ollama pull %s" % base)
+        out("    printf 'FROM %s\\nPARAMETER num_ctx 32768\\n' > Modelfile" % base)
+        out("    ollama create %s -f Modelfile" % model)
+        out("  the pinned window is what keeps Hermes' 19 tool definitions in")
+        out("  the prompt; at the stock 4096 they are truncated out of it.")
+    else:
+        out("    ollama pull %s" % model)
+
+
 # ---------------------------------------------------------------------------
 # .env
 # ---------------------------------------------------------------------------
@@ -248,7 +301,15 @@ def _pick_role(cfg, role, ask, out):
     for i, name in enumerate(models, 1):
         if name == model and spec.get("id") == endpoint_id:
             default = i
-    index = _choose([(m, "") for m in models] + [("other", "type an id")],
+    # What this host has, so the list stops being a wish. None means it could not
+    # be asked, and then every entry is offered without comment rather than
+    # wrongly marked missing.
+    present = local_models(spec)
+    notes = {}
+    if present is not None:
+        for name in models:
+            notes[name] = "" if name in present else "not on this host"
+    index = _choose([(m, notes.get(m, "")) for m in models] + [("other", "type an id")],
                     "model", ask, out, default)
     if index == len(models):
         chosen = ask("  model id: ").strip()
@@ -259,6 +320,11 @@ def _pick_role(cfg, role, ask, out):
         out("        is a menu, not a limit, so this is written as given.")
     else:
         chosen = models[index]
+    if present is not None and chosen not in present:
+        out("")
+        out("  this host does not have %r yet. The agent checks that at" % chosen)
+        out("  startup and refuses to run without it, so get it before `up`:")
+        pull_recipe(chosen, out)
     return spec.get("id"), chosen
 
 
