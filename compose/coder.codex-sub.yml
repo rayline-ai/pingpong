@@ -1,6 +1,7 @@
 # Overlay for CODER_MODE=codex-sub. The coder's half of the pair; see
-# reviewer.codex-sub.yml for why nothing from the host is mounted, why the
-# session lives in a Hermes home of its own, and why there is a file per role.
+# reviewer.codex-sub.yml for why nothing from ~/.codex is mounted, why the
+# session lives in a Hermes home of its own on the host rather than in a volume,
+# and why there is a file per role.
 
 services:
 
@@ -8,7 +9,4 @@ services:
     environment:
       HERMES_HOME: /hermes
     volumes:
-      - hermes-coder:/hermes
-
-volumes:
-  hermes-coder:
+      - ${CODER_SESSION_DIR:?set CODER_MODE=codex-sub in .env and run ./pingpong up, which fills this in}:/hermes

@@ -50,16 +50,24 @@ ROLES = ("reviewer", "coder")
 MOUNT = "/credentials"
 
 # Where a codex-sub agent keeps the session `./pingpong login` created. A Hermes
-# home of its own, on a volume, rather than the image's populated /root/.hermes:
-# auth.json is written by atomic replace, so nothing narrower than a directory
-# can persist it, and a volume over /root/.hermes would freeze 295MB of image
-# content at first boot.
+# home of its own, rather than the image's populated /root/.hermes: auth.json is
+# written by atomic replace, so nothing narrower than a directory can persist it,
+# and a mount over /root/.hermes would freeze 295MB of image content at first
+# boot. The entrypoint creates it and Hermes fills in what it needs.
 HERMES_HOME = "/hermes"
+
+# And where that home lives on the host. A directory rather than a named volume,
+# because the sign-in is an interactive device-code flow and `docker compose
+# down -v` is a routine thing to type: a volume makes a one-time step into a
+# once-per-teardown step. In the operator's profile rather than under the
+# repository, because it holds a live OAuth token and a working tree is the one
+# directory that gets zipped, copied and shared.
+SESSION_ROOT = ".pingpong"
 
 MODES = {
     "claude-sub": {
         "provider": "anthropic",
-        "example": "claude-sonnet-4-6",
+        "example": "claude-sonnet-5",
         # The host directory holding the login, and the file that proves it
         # happened. None means this mode brings its own credentials.
         "host_dir": ".claude",
@@ -68,11 +76,16 @@ MODES = {
     },
     "codex-sub": {
         "provider": "openai-codex",
-        # Not gpt-5.5-codex: the API answers 400 "not supported when using Codex
+        # Not gpt-5.6-codex: the API answers 400 "not supported when using Codex
         # with a ChatGPT account" for every -codex id. The plain ids work.
-        "example": "gpt-5.5",
+        "example": "gpt-5.6-terra",
         "host_dir": None,
         "host_file": None,
+        # The per-role directory under SESSION_ROOT holding this mode's own
+        # login. One per role and never shared: Codex rotates its refresh token
+        # on every refresh, so two agents on one grant would race and whichever
+        # refreshed second would find its copy revoked.
+        "session_dir": "hermes-%s",
         "login": "run ./pingpong login once — it signs that agent in",
     },
 }
@@ -120,6 +133,16 @@ def uses_host_login(name):
     return bool(MODES.get(name, {}).get("host_dir"))
 
 
+def keeps_own_session(name):
+    """Whether this mode makes a login of its own and needs somewhere to keep it.
+
+    The complement of uses_host_login among the subscription modes, but spelled
+    out rather than inferred: they answer different questions, and a third mode
+    could plausibly do both or neither.
+    """
+    return bool(MODES.get(name, {}).get("session_dir"))
+
+
 def home():
     """The operator's home directory, as the host sees it.
 
@@ -142,6 +165,28 @@ def credentials_file(name, base=None):
     if not directory:
         return None
     return os.path.join(directory, MODES[name]["host_file"])
+
+
+def session_dir(role, env=None, base=None):
+    """Where this role's own login lives on the host. None if it makes none."""
+    template = MODES.get(mode(role, env), {}).get("session_dir")
+    if not template:
+        return None
+    return os.path.join(base or home(), SESSION_ROOT, template % role)
+
+
+def make_private(directory):
+    """Create a directory the operator owns, readable by nobody else.
+
+    Ahead of compose rather than leaving it to the bind, because a missing bind
+    source is created by the daemon: on Linux that lands root-owned, and the
+    person who has to run the sign-in cannot read the result. The mode is a
+    no-op on Windows, where the ACL inherited from the profile is what actually
+    guards the token — the same footing ~/.claude is already on.
+    """
+    for path in (os.path.dirname(directory), directory):
+        if not os.path.isdir(path):
+            os.makedirs(path, mode=0o700)
 
 
 def compose_path(path):
@@ -175,7 +220,9 @@ def check(name, base=None):
 
 
 def ensure(out, env=None):
-    """Check every role's mode, and fill in CREDENTIALS_DIR if one needs it.
+    """Check every role's mode, and fill in the host paths the modes need.
+
+    CREDENTIALS_DIR for claude-sub, <ROLE>_SESSION_DIR for codex-sub.
 
     Returns 0 when the stack can start, 1 when it cannot. Reports on both roles
     before returning rather than stopping at the first: two roles configured in
@@ -231,6 +278,18 @@ def ensure(out, env=None):
         if models.env_value("CREDENTIALS_DIR") != wanted:
             models.env_set("CREDENTIALS_DIR", wanted)
             out("CREDENTIALS_DIR -> %s" % wanted)
+
+    # One per role, unlike CREDENTIALS_DIR: these are separate grants rather than
+    # one account seen twice, and the reason they are separate is in MODES.
+    for role in ROLES:
+        directory = session_dir(role, env)
+        if not directory:
+            continue
+        make_private(directory)
+        wanted = compose_path(directory)
+        if models.env_value(_var(role, "SESSION_DIR")) != wanted:
+            models.env_set(_var(role, "SESSION_DIR"), wanted)
+            out("%s -> %s" % (_var(role, "SESSION_DIR"), wanted))
     return 0
 
 

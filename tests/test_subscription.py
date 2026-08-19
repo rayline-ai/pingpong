@@ -23,6 +23,8 @@ CODER_MODE=router
 REVIEWER_MODEL=
 CODER_MODEL=
 CREDENTIALS_DIR=
+REVIEWER_SESSION_DIR=
+CODER_SESSION_DIR=
 MAX_ROUNDS=3
 """
 
@@ -90,14 +92,14 @@ class TestMode(unittest.TestCase):
         # The whole point of the split: one role's setting must not answer for
         # the other, in either direction.
         values = env(reviewer="claude-sub", coder="codex-sub",
-                     reviewer_model="claude-sonnet-4-6", coder_model="gpt-5.5")
+                     reviewer_model="claude-sonnet-5", coder_model="gpt-5.6-terra")
         self.assertEqual(subscription.mode("reviewer", values), "claude-sub")
         self.assertEqual(subscription.mode("coder", values), "codex-sub")
-        self.assertEqual(subscription.model("reviewer", values), "claude-sonnet-4-6")
-        self.assertEqual(subscription.model("coder", values), "gpt-5.5")
+        self.assertEqual(subscription.model("reviewer", values), "claude-sonnet-5")
+        self.assertEqual(subscription.model("coder", values), "gpt-5.6-terra")
 
     def test_one_role_on_a_subscription_leaves_the_other_on_router(self):
-        values = env(reviewer="codex-sub", reviewer_model="gpt-5.5")
+        values = env(reviewer="codex-sub", reviewer_model="gpt-5.6-terra")
         self.assertEqual(subscription.router_roles(values), ["coder"])
         self.assertEqual(subscription.subscription_roles(values), ["reviewer"])
         self.assertEqual(subscription.roles_in("codex-sub", values), ["reviewer"])
@@ -165,7 +167,7 @@ class TestSubscriptionMode(Sandbox):
 
     def test_it_writes_the_host_directory_when_everything_is_there(self):
         self.login("claude-sub")
-        self.env = env(reviewer="claude-sub", reviewer_model="claude-sonnet-4-6")
+        self.env = env(reviewer="claude-sub", reviewer_model="claude-sonnet-5")
         code, output = self.ensure()
         self.assertEqual(code, 0)
         written = models.env_value("CREDENTIALS_DIR")
@@ -187,16 +189,62 @@ class TestSubscriptionMode(Sandbox):
             self.assertEqual(code, 0)
             self.assertTrue(models.env_value("CREDENTIALS_DIR").endswith("/.claude"))
 
-    def test_codex_needs_nothing_from_this_host(self):
-        # Its session is Hermes' own, made by `pingpong login` and kept in a
-        # volume. Reading ~/.codex would work once and then revoke the
-        # operator's own `codex` CLI, so nothing here goes looking for it.
-        self.env = env(reviewer="codex-sub", reviewer_model="gpt-5.5")
+    def test_codex_reads_no_login_from_this_host(self):
+        # Its session is Hermes' own, made by `pingpong login`. Reading ~/.codex
+        # would work once and then revoke the operator's own `codex` CLI, so
+        # nothing here goes looking for it — CREDENTIALS_DIR stays empty.
+        self.env = env(reviewer="codex-sub", reviewer_model="gpt-5.6-terra")
         code, output = self.ensure()
         self.assertEqual(code, 0, output)
         self.assertEqual(models.env_value("CREDENTIALS_DIR"), "")
         self.assertFalse(subscription.uses_host_login("codex-sub"))
         self.assertIsNone(subscription.credentials_dir("codex-sub"))
+
+    def test_codex_gets_a_session_directory_it_can_keep(self):
+        # The sign-in is an interactive device-code flow, so it must survive
+        # `down -v`: a directory on the host, made before compose can create it
+        # as root, and pointed at from .env because compose cannot expand ~.
+        self.env = env(reviewer="codex-sub", reviewer_model="gpt-5.6-terra")
+        code, output = self.ensure()
+        self.assertEqual(code, 0, output)
+        written = models.env_value("REVIEWER_SESSION_DIR")
+        self.assertTrue(written.endswith("/.pingpong/hermes-reviewer"), written)
+        self.assertNotIn("\\", written)
+        self.assertIn("REVIEWER_SESSION_DIR", output)
+        self.assertTrue(os.path.isdir(
+            subscription.session_dir("reviewer", self.env, self.home)))
+
+    def test_the_two_roles_never_share_a_session(self):
+        # One grant per agent. Codex rotates its refresh token on every refresh,
+        # so a shared directory would sign one of the two out at the first one.
+        self.env = env(reviewer="codex-sub", coder="codex-sub",
+                       reviewer_model="m", coder_model="m")
+        code, output = self.ensure()
+        self.assertEqual(code, 0, output)
+        reviewer = models.env_value("REVIEWER_SESSION_DIR")
+        coder = models.env_value("CODER_SESSION_DIR")
+        self.assertTrue(reviewer and coder)
+        self.assertNotEqual(reviewer, coder)
+
+    def test_a_role_not_on_codex_gets_no_session_directory(self):
+        # The overlay is per role, and a stale value would mount a directory
+        # into an agent that has no use for one.
+        self.login("claude-sub")
+        self.env = env(reviewer="claude-sub", coder="codex-sub",
+                       reviewer_model="m", coder_model="m")
+        code, output = self.ensure()
+        self.assertEqual(code, 0, output)
+        self.assertEqual(models.env_value("REVIEWER_SESSION_DIR"), "")
+        self.assertTrue(models.env_value("CODER_SESSION_DIR").endswith("hermes-coder"))
+        self.assertIsNone(subscription.session_dir("reviewer", self.env))
+
+    def test_the_session_lives_outside_the_repository(self):
+        # It holds a live OAuth token, and a working tree is the one directory
+        # that gets zipped, copied and shared.
+        directory = subscription.session_dir(
+            "reviewer", env(reviewer="codex-sub"), self.home)
+        self.assertTrue(directory.startswith(self.home), directory)
+        self.assertNotIn(os.path.abspath("."), directory)
 
     def test_codex_still_needs_a_model(self):
         self.env = env(coder="codex-sub")
@@ -212,7 +260,7 @@ class TestSubscriptionMode(Sandbox):
         # The configuration this whole split exists for.
         self.login("claude-sub")
         self.env = env(reviewer="claude-sub", coder="codex-sub",
-                       reviewer_model="claude-sonnet-4-6", coder_model="gpt-5.5")
+                       reviewer_model="claude-sonnet-5", coder_model="gpt-5.6-terra")
         code, output = self.ensure()
         self.assertEqual(code, 0, output)
         self.assertTrue(models.env_value("CREDENTIALS_DIR").endswith("/.claude"))

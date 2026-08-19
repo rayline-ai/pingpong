@@ -13,7 +13,7 @@
 #   claude-sub  No router. Hermes uses this host's own Claude login, mounted at
 #               /credentials, and SUBSCRIPTION_MODEL names the model directly.
 #   codex-sub   No router either, but the session is Hermes' own, made once by
-#               `./pingpong login` and kept in the volume at HERMES_HOME.
+#               `./pingpong login` and kept on the host at HERMES_HOME.
 #
 # The subscription modes are not a Rayline feature: `rayline router start`
 # accepts a `subscription` main route only by deleting it, after which the router
@@ -29,7 +29,7 @@ INJECTOR=${INJECTOR:-http://127.0.0.1:20809}
 CREDENTIALS=${CREDENTIALS:-/credentials}
 # Where Hermes keeps config.yaml and, in codex-sub, its OAuth session. The
 # default is the image's own populated home; compose/<role>.codex-sub.yml points
-# it at a volume instead, and says there why that is a separate directory rather
+# it at a host directory instead, and says there why that is a separate home rather
 # than a mount over this one.
 HERMES_HOME=${HERMES_HOME:-/root/.hermes}
 
@@ -155,7 +155,7 @@ start_codex_sub() {
     # borrowing that file would work once and then revoke the operator's own
     # `codex` CLI. This agent holds a session of its own instead.
     if [ "${HERMES_HOME}" = "/root/.hermes" ]; then
-        echo "[agent] FATAL: codex-sub needs HERMES_HOME on a volume, and it is" >&2
+        echo "[agent] FATAL: codex-sub needs HERMES_HOME mounted from the host," >&2
         echo "[agent] the image's own home. The session would be lost on every" >&2
         echo "[agent] restart and ./pingpong login would have to be run again each" >&2
         echo "[agent] time. Start with ./pingpong up, which adds the overlay this" >&2

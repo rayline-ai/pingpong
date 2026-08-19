@@ -105,7 +105,7 @@ def cmd_doctor(args, cfg):
             ok = False
             continue
         # The one credential this project cannot check from the host: it is made
-        # by `pingpong login` and lives in that agent's own volume. Asked per
+        # by `pingpong login` and lives in that agent's own directory. Asked per
         # role, since only the roles on codex-sub have one to check.
         if subscription.mode(label) == "codex-sub":
             if agents.codex_signed_in(container):

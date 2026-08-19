@@ -134,16 +134,16 @@ than the one place that collapses them:
 ```ini
 # One of each, which keeps the two roles genuinely apart.
 REVIEWER_MODE=codex-sub
-REVIEWER_MODEL=gpt-5.5
+REVIEWER_MODEL=gpt-5.6-terra
 CODER_MODE=claude-sub
-CODER_MODEL=claude-sonnet-4-6
+CODER_MODEL=claude-sonnet-5
 ```
 
 ```ini
 # Or one on a subscription and the other still routed by Rayline. Leave the
 # routed role's MODEL empty and pick its brain with `./pingpong model`.
 REVIEWER_MODE=codex-sub
-REVIEWER_MODEL=gpt-5.5
+REVIEWER_MODEL=gpt-5.6-terra
 CODER_MODE=router
 ```
 
@@ -165,10 +165,13 @@ one account serves both roles if you put both on it.
 That is not an oversight. Codex rotates its refresh token on every refresh and
 does not write the new one back, so borrowing `~/.codex` the way `claude-sub`
 borrows `~/.claude` would work exactly once and then leave *your* `codex` command
-signed out. Each agent gets a session of its own, kept in a volume so the sign-in
-is once and not once per restart. `./pingpong login` only ever touches the roles
-actually on `codex-sub`, and says so about the ones that are not. Use `gpt-5.5`
-and not `gpt-5.5-codex` — a ChatGPT account is refused for every `-codex` id.
+signed out. Hermes could not read that file anyway — it keeps credentials in its
+own format, and `hermes import-agent codex` states that credentials are never
+imported. Each agent gets a session of its own, kept in `~/.pingpong/hermes-<role>`
+on the host, so the sign-in survives a restart, a rebuild and `down -v` alike. `./pingpong login` only ever touches the roles
+actually on `codex-sub`, and says so about the ones that are not. Use
+`gpt-5.6-terra` and not `gpt-5.6-codex` — a ChatGPT account is refused for every
+`-codex` id.
 
 What a subscription costs you: that role's every round counts against your own
 plan's limits rather than a metered key. Check the plan's terms before leaving it
