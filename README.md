@@ -187,7 +187,6 @@ cp .env.sample .env        # no key needed yet
 ./pingpong accounts        # the admin, the two bots and their tokens, and you
 ./pingpong model           # optional: put a role on a hosted model instead
 ./pingpong up              # again, so the engine picks those up
-./pingpong onboard ../some-repo
 ./pingpong doctor
 ```
 
@@ -196,6 +195,15 @@ be minted until Forgejo has booted. `accounts` prints a password per account, an
 each one has a first login that only a human can do. **[SETUP.md](SETUP.md)** is
 the actual procedure, and the Forgejo behaviours that cost an afternoon if you
 meet them by surprise.
+
+That is the instance, with nothing on it. Putting a repository on it is a
+separate job, run once per repository rather than once per instance — and it acts
+as *you*, so it needs your first login done or Forgejo answers `403` to every
+call it makes:
+
+```bash
+./pingpong onboard ../some-repo
+```
 
 Forgejo lands on **23000**, the engine on **23080**, Forgejo's SSH on **23022** —
 not 3000/8080/2222, which are the most contended numbers on a machine that runs

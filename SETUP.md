@@ -1,12 +1,11 @@
 # Setting up a PingPong instance
 
-Standing an instance up: the stack, the accounts, and putting a repository on
-it. Working *in* a repository the instance reviews is a different job, done by
-different people — see [Using it from a
+Standing an instance up: the stack and the accounts. Setup ends with a working
+instance and no repositories on it — [adding one](#adding-a-repository) is a
+separate job below, done once per repository rather than once per instance.
+Working *in* a repository the instance reviews is a third job, done by different
+people — see [Using it from a
 repository](README.md#using-it-from-a-repository) and `templates/AGENTS.md`.
-
-Everything here is done once per instance, except step 4, which repeats for
-every repository you add.
 
 ## Starting the stack
 
@@ -93,7 +92,7 @@ machine.
 the links in everything it sends from it. Leave it `localhost` while serving a
 LAN and every other machine gets handed a URL pointing back at itself.
 
-## Accounts, tokens, and the first repository
+## Accounts and tokens
 
 Self-registration is off (`DISABLE_REGISTRATION` in `docker-compose.yml`), so the
 accounts are made with Forgejo's own CLI rather than through the sign-up page.
@@ -156,65 +155,77 @@ That is one command, run from this directory:
    This is not part of setup; it is what you run months later when someone joins.
 3. `./pingpong up` again to pick up the new `.env`, then `./pingpong doctor`. The
    engine reads the tokens and the webhook secret at start, so it needs a restart
-   before the next step can check the hook it registers.
-4. **Put a repository on the instance**, owned by a person's account. One
-   command, run from this directory:
+   before anything that checks a webhook can give an honest answer.
 
-   ```bash
-   ./pingpong onboard ../some-repo
-   ```
+That is the instance. `doctor` clean means Forgejo is up, both agents resolved a
+brain and found what it needs, and the engine holds the tokens — with nothing on
+the instance yet.
 
-   It creates the repository under the account whose email that folder commits
-   with, adds `pingpong-reviewer` and `pingpong-coder` as collaborators with
-   **write**, mints the owner a token if `~/.netrc` has none — or replaces one
-   the create call refuses for scope — pushes `HEAD` to `main`, sets
-   `pingpong.api`, copies `templates/AGENTS.md` in, registers the webhook and
-   proves that the webhook's secret still works. Every step checks the instance
-   first and reports `already` rather than failing, so a run interrupted halfway
-   is repeated rather than unpicked — and running it again on a repository that
-   is already set up is a useful check in itself.
+## Adding a repository
 
-   That is a script rather than a list of steps here because most of what this
-   step knows is conditional — which scope a call needs, what order the
-   credential and the push go in, whether the folder was ever pointed at an
-   instance before. Prose cannot check any of it, and every one of those
-   failures is a quiet one.
+Not part of setup, and not something to hurry into: this is what you run once per
+repository, whenever you have one to review, including months later. It needs
+**step 2 done first** — it acts as *you*, not as a bot, and Forgejo answers `403`
+to every call a person's token makes until that account's first login clears the
+forced password change.
 
-   Everything from here is per repository, and repeats for each one you add.
+**Put a repository on the instance**, owned by a person's account. One command,
+run from this directory:
 
-   Four things it does that are worth knowing anyway, because they are what
-   costs time when this goes wrong elsewhere:
+```bash
+./pingpong onboard ../some-repo
+```
 
-   - **The bots need write.** Without it the reviewer cannot post a review and
-     the coder cannot push, and the round fails partway rather than at the start.
-   - **The hook's secret is checked by using it, every run.** An empty or stale
-     one is the worst failure this setup has: Forgejo answers `201`, the hook
-     looks correct in the UI, and every delivery afterwards fails its signature
-     check. `onboard` refuses to create a hook with an empty secret, and for one
-     that already exists it makes Forgejo sign a throwaway delivery and reads the
-     engine's verdict — the only way to know, since the secret cannot be read
-     back or edited. See [The webhook secret cannot be read
-     back](#the-webhook-secret-cannot-be-read-back).
-   - **`main` has to exist before a PR can be opened against it**, which is why
-     the folder's `HEAD` goes there first — and why the repository is created
-     with `auto_init` false. An initialised repository already holds a commit of
-     its own, and pushing real history at it is then a non-fast-forward that
-     fails for a reason that reads as a permissions problem.
-   - **No credential in the remote URL, and the engine's address in git config
-     rather than in the repository.** Both are rules the reviewed repo's
-     `AGENTS.md` states and expects to hold. The credential comes from
-     `~/.netrc`, host only and no port, and that one entry serves both
-     `git push forgejo` and `curl -n` against Forgejo and the engine.
+It creates the repository under the account whose email that folder commits with,
+adds `pingpong-reviewer` and `pingpong-coder` as collaborators with **write**,
+mints the owner a token if `~/.netrc` has none — or replaces one the create call
+refuses for scope — pushes `HEAD` to `main`, sets `pingpong.api`, copies
+`templates/AGENTS.md` in, registers the webhook and proves that the webhook's
+secret still works. Every step checks the instance first and reports `already`
+rather than failing, so a run interrupted halfway is repeated rather than
+unpicked — and running it again on a repository that is already set up is a
+useful check in itself.
 
-   To do the same thing by hand — or to read a hook back and understand its
-   event list — see [Onboarding a repository by hand](#onboarding-a-repository-by-hand).
-5. Edit the places `AGENTS.md` marks *decide this per repo* in the repository you
-   just onboarded. It is what tells whoever works there how to drive the loop;
-   without it they have a forge with two bots on it and no way to know what any
-   of it means.
+That is a script rather than a list of steps here because most of what it knows
+is conditional — which scope a call needs, what order the credential and the push
+go in, whether the folder was ever pointed at an instance before. Prose cannot
+check any of it, and every one of those failures is a quiet one.
+
+Then **edit the places `AGENTS.md` marks *decide this per repo*** in the
+repository you just onboarded. It is what tells whoever works there how to drive
+the loop; without it they have a forge with two bots on it and no way to know
+what any of it means.
 
 Optionally turn on branch protection requiring an approving review — that is what
-turns the reviewer's `APPROVED` into an actual merge gate.
+turns the reviewer's `APPROVED` into an actual merge gate. Per repository, like
+everything else in this section.
+
+Four things `onboard` does that are worth knowing anyway, because they are what
+costs time when this goes wrong elsewhere:
+
+- **The bots need write.** Without it the reviewer cannot post a review and the
+  coder cannot push, and the round fails partway rather than at the start.
+- **The hook's secret is checked by using it, every run.** An empty or stale one
+  is the worst failure this setup has: Forgejo answers `201`, the hook looks
+  correct in the UI, and every delivery afterwards fails its signature check.
+  `onboard` refuses to create a hook with an empty secret, and for one that
+  already exists it makes Forgejo sign a throwaway delivery and reads the
+  engine's verdict — the only way to know, since the secret cannot be read back
+  or edited. See [The webhook secret cannot be read
+  back](#the-webhook-secret-cannot-be-read-back).
+- **`main` has to exist before a PR can be opened against it**, which is why the
+  folder's `HEAD` goes there first — and why the repository is created with
+  `auto_init` false. An initialised repository already holds a commit of its own,
+  and pushing real history at it is then a non-fast-forward that fails for a
+  reason that reads as a permissions problem.
+- **No credential in the remote URL, and the engine's address in git config
+  rather than in the repository.** Both are rules the reviewed repo's `AGENTS.md`
+  states and expects to hold. The credential comes from `~/.netrc`, host only and
+  no port, and that one entry serves both `git push forgejo` and `curl -n`
+  against Forgejo and the engine.
+
+To do the same thing by hand — or to read a hook back and understand its event
+list — see [Onboarding a repository by hand](#onboarding-a-repository-by-hand).
 
 ## Reference
 
@@ -300,11 +311,11 @@ across namespaces. The three on a person's token:
 | --- | --- |
 | `write:repository` | `git push`, and `POST` of a pull request |
 | `read:user` | the identity checks in `templates/AGENTS.md` — `/api/v1/user`, `/api/v1/user/emails` |
-| `write:user` | one call only: creating a repository, in step 4 |
+| `write:user` | one call only: creating a repository, in [Adding a repository](#adding-a-repository) |
 
-`write:user` is on this token rather than on a second one because step 4 repeats
-for every repository you ever add, and a token minted per repository is a token
-you cannot revoke per repository. Better one credential you know the whereabouts
+`write:user` is on this token rather than on a second one because onboarding
+repeats for every repository you ever add, and a token minted per repository is a
+token you cannot revoke per repository. Better one credential you know the whereabouts
 of than a growing set of forgotten ones.
 
 Know what it widens: `write:user` also rewrites the account's email addresses and
@@ -342,7 +353,7 @@ repository is not — that is the accumulation worth avoiding.
 
 ### Onboarding a repository by hand
 
-What step 4 automates: create the repository (with `auto_init` **false**), add
+What `onboard` automates: create the repository (with `auto_init` **false**), add
 `pingpong-reviewer` and `pingpong-coder` under Settings → Collaborators with
 **write**, push the folder's `HEAD` to `main`, and add a webhook pointing at
 `http://api:8080/webhook`, content type JSON, `PINGPONG_WEBHOOK_SECRET` as the
