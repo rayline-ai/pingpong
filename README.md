@@ -52,8 +52,8 @@ Neither the code nor `.env` names a model. Both live in one file:
 ```jsonc
 // rayline/pingpong.json
 "model_routes": {
-  "reviewer-brain": { "endpoint": "ollama-local", "model": "qwen3.5:9b-32k" },
-  "coder-brain":    { "endpoint": "ollama-local", "model": "qwen3.5:9b-32k" }
+  "reviewer-brain": { "endpoint": "ollama-local", "model": "qwen2.5-coder:7b-32k" },
+  "coder-brain":    { "endpoint": "ollama-local", "model": "qwen2.5-coder:7b-32k" }
 }
 ```
 
@@ -139,19 +139,30 @@ that is not on it is written as given, with a note.
 Needs [ollama](https://ollama.com) on the host, which is where both roles start:
 
 ```bash
-./pingpong model coder ollama-local qwen3.5:9b-32k
+./pingpong model coder ollama-local qwen3.5:9b-32k   # a bigger one
 docker compose up -d coder
 ```
 
-**Give the model a 32k context window or it will not call tools.** ollama sizes
-the window from VRAM and a constrained host silently gets 4096 tokens, which
-truncates Hermes' tool definitions out of the prompt. Bake it into the tag:
+**Give the model a 32k context window or it will not call tools** — which is what
+the `-32k` suffix means. It is a tag someone had to create, not a naming
+convention. ollama picks the default window from VRAM (`4k/32k/256k`), and on a
+constrained host that is 4096 tokens, which truncates Hermes' tool definitions
+out of the prompt: the model then narrates shell commands instead of calling
+them, and reads as too weak. Bake the window into a tag of your own:
 
 ```bash
-printf 'FROM qwen3.5:9b\nPARAMETER num_ctx 32768\n' > Modelfile
-ollama create qwen3.5:9b-32k -f Modelfile
+printf 'FROM qwen2.5-coder:7b\nPARAMETER num_ctx 32768\n' > Modelfile
+ollama create qwen2.5-coder:7b-32k -f Modelfile
 ollama ps          # CONTEXT must read 32768, not 4096
 ```
+
+Setting `OLLAMA_CONTEXT_LENGTH=32768` on the ollama *server* does the same job
+and is the better answer if you want it for every model you run. The tag is what
+ships because it is the half PingPong can carry: the env var lives on the host
+daemon and needs a restart, and nothing in this repo can set it or see it from
+inside a container. The two do not fight — measured on ollama 0.32.9, a tag
+pinned at 32768 still loads at 32768 under `OLLAMA_CONTEXT_LENGTH=8192`, and a
+value above the model's own maximum is clamped down to it.
 
 ## Layout
 

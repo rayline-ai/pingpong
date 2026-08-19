@@ -69,20 +69,34 @@
     "`openai_chat` cost nothing to use. ollama speaks Anthropic natively on",
     "/v1/messages, so nothing translates there at all.",
     "",
-    "THE `-32k` SUFFIX IS LOAD-BEARING. The two unsuffixed tags above (qwen2.5-coder:7b,",
-    "gemma4:26b-a4b-it-qat) are stock and will NOT call tools until you pin them the",
-    "same way. ollama sizes the context window from VRAM (OLLAMA_CONTEXT_LENGTH,",
-    "'default: 4k/32k/256k based on VRAM'), so a constrained host silently gets 4096",
-    "tokens — well under what the harness needs. Hermes sends 19",
-    "tools and a 23.6 KB system prompt; the overflow truncates the TOOL DEFINITIONS,",
-    "and the model then narrates shell commands as prose instead of calling tools —",
-    "which reads exactly like 'this model is too dumb'. It is not. qwen3.5:9b and",
-    "qwen3.6:35b-a3b failed identically until the window was pinned. Rayline cannot",
-    "fix this for you: ollama ignores `options` on its compat routes. Bake it in:",
-    "  printf 'FROM qwen3.5:9b\\nPARAMETER num_ctx 32768\\n' > Modelfile",
-    "  ollama create qwen3.5:9b-32k -f Modelfile",
-    "Verify with `ollama ps` — the CONTEXT column must read 32768, not 4096.",
-    "With that pinned, qwen3.5:9b-32k drove a full unattended round on PR #7."
+    "THE `-32k` SUFFIX IS LOAD-BEARING, and it is not a naming convention — it is a",
+    "tag someone had to create. gemma4:26b-a4b-it-qat above is stock and will NOT",
+    "call tools until you pin it the same way. ollama sizes the context window from",
+    "VRAM (OLLAMA_CONTEXT_LENGTH, 'default: 4k/32k/256k based on VRAM'), so a",
+    "constrained host silently gets 4096 tokens. Measured on ollama 0.32.9 with",
+    "OLLAMA_CONTEXT_LENGTH unset, loading each tag and reading /api/ps:",
+    "  qwen2.5-coder:7b       context_length = 4096",
+    "  qwen2.5-coder:7b-32k   context_length = 32768",
+    "4096 is well under what the harness needs. Hermes sends 19 tools and a 23.6 KB",
+    "system prompt — roughly 6k tokens before the diff is added at all — so the",
+    "overflow truncates the TOOL DEFINITIONS, and the model then narrates shell",
+    "commands as prose instead of calling them, which reads exactly like 'this model",
+    "is too dumb'. It is not. qwen3.5:9b and qwen3.6:35b-a3b failed identically until",
+    "the window was pinned. Rayline cannot fix this for you: ollama ignores `options`",
+    "on its compat routes. Bake it into a tag of your own:",
+    "  printf 'FROM qwen2.5-coder:7b\\nPARAMETER num_ctx 32768\\n' > Modelfile",
+    "  ollama create qwen2.5-coder:7b-32k -f Modelfile",
+    "Verify by loading it and reading /api/ps, or with `ollama ps` — the CONTEXT",
+    "column must read 32768, not 4096.",
+    "",
+    "SETTING OLLAMA_CONTEXT_LENGTH ON THE SERVER does the same job for every model",
+    "at once, and is the better answer if you run more than this one. It is not",
+    "what ships because it is the half this repo cannot carry: it lives on the host",
+    "daemon, wants a restart, and nothing inside a container can set it or read it",
+    "back. The two do not fight — same method, on a second ollama server:",
+    "                         env=8192   env=65536",
+    "    qwen2.5-coder:7b       8192       32768   clamped to the model's maximum",
+    "    qwen2.5-coder:7b-32k   32768      32768   the tag wins over the server"
   ],
   "endpoints": [
     {
@@ -90,9 +104,9 @@
       "protocol": "anthropic_messages",
       "base_url": "http://host.docker.internal:11434",
       "models": [
+        "qwen2.5-coder:7b-32k",
         "qwen3.5:9b-32k",
         "qwen3.6:35b-a3b-32k",
-        "qwen2.5-coder:7b",
         "gemma4:26b-a4b-it-qat"
       ]
     },
@@ -148,23 +162,23 @@
   "routes": {
     "main": {
       "endpoint": "ollama-local",
-      "model": "qwen3.5:9b-32k",
+      "model": "qwen2.5-coder:7b-32k",
       "router": "rayline-local"
     },
     "subagent": {
       "endpoint": "ollama-local",
-      "model": "qwen3.5:9b-32k",
+      "model": "qwen2.5-coder:7b-32k",
       "router": "rayline-local"
     },
     "model_routes": {
       "reviewer-brain": {
         "endpoint": "ollama-local",
-        "model": "qwen3.5:9b-32k",
+        "model": "qwen2.5-coder:7b-32k",
         "router": "rayline-local"
       },
       "coder-brain": {
         "endpoint": "ollama-local",
-        "model": "qwen3.5:9b-32k",
+        "model": "qwen2.5-coder:7b-32k",
         "router": "rayline-local"
       }
     }
