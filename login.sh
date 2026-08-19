@@ -89,7 +89,7 @@ else
 fi
 
 # Only the overlays for the roles being signed in — the codex-sub file for a role
-# that is not on it would move that agent's Hermes home onto an empty volume.
+# that is not on it would move that agent's Hermes home somewhere empty.
 COMPOSE=(docker compose -f docker-compose.yml)
 for service in "${SERVICES[@]}"; do
     COMPOSE+=(-f "compose/${service}.codex-sub.yml")
@@ -106,11 +106,11 @@ signed_in() {
 }
 
 # .env says codex-sub, but the container that is actually running may predate
-# that edit — `up` has to have replaced it for the volume to be there. Signing in
+# that edit — `up` has to have replaced it for the mount to be there. Signing in
 # to a container whose Hermes home is the image's own would appear to work and
 # then lose the session at the next restart, which is the one failure a one-time
 # interactive step must not have.
-home_is_a_volume() {
+home_is_on_the_host() {
     [ "$("${COMPOSE[@]}" exec -T "$1" printenv HERMES_HOME 2>/dev/null | tr -d '\r')" \
       = "/hermes" ]
 }
@@ -118,12 +118,25 @@ home_is_a_volume() {
 for service in "${SERVICES[@]}"; do
     step "${service}"
 
-    "${COMPOSE[@]}" ps --status running --services 2>/dev/null | grep -qx "${service}" \
+    # Asked and answered separately, because they are different problems with
+    # the same symptom: compose failing to answer at all used to be reported as
+    # "not running", which sends you to restart a stack that was never the
+    # trouble. Whatever compose said is worth more than anything guessed here.
+    if ! running=$("${COMPOSE[@]}" ps --status running --services 2>&1); then
+        die "could not ask docker what is running:
+
+${running}
+
+     The stack may be fine — this is the query failing, not the container."
+    fi
+    printf '%s\n' "${running}" | tr -d '\r' | grep -qx "${service}" \
         || die "the ${service} container is not running. Start the stack with
      ./pingpong up first — the sign-in happens inside it, so that its
-     session lands in the volume that survives a restart."
+     session lands in the directory that survives a teardown.
 
-    home_is_a_volume "${service}" \
+     docker compose ps says: $(printf '%s' "${running}" | tr '\n' ' ')"
+
+    home_is_on_the_host "${service}" \
         || die "the ${service} container is not running in codex-sub: its Hermes
      home is the image's own, so a session made now would be gone at the
      next restart. Run ./pingpong up to replace it, then try again."

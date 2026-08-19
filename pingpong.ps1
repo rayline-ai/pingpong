@@ -23,6 +23,37 @@ try {
         if ($value) { return $value.Trim() } else { return 'router' }
     }
 
+    # Git Bash specifically, not whatever `bash` happens to be first on PATH.
+    # Windows ships C:\Windows\System32\bash.exe — the WSL launcher — and if that
+    # wins, the host scripts run inside the distro, where `docker` is a different
+    # binary talking to unix:///var/run/docker.sock. With WSL integration off
+    # that socket does not exist, so every docker call fails for a reason that
+    # has nothing to do with this stack. Git for Windows is already a
+    # prerequisite for cloning, so its bash is the one to insist on.
+    function Get-GitBash {
+        $candidates = @()
+        foreach ($root in @($env:ProgramFiles, ${env:ProgramFiles(x86)}, $env:LOCALAPPDATA)) {
+            if ($root) { $candidates += (Join-Path $root 'Git\bin\bash.exe') }
+        }
+        # Wherever git itself is, bash is its sibling — this catches scoop,
+        # winget and any other non-default install root.
+        $git = Get-Command git -ErrorAction SilentlyContinue
+        if ($git) {
+            $candidates += (Join-Path (Split-Path (Split-Path $git.Source)) 'bin\bash.exe')
+            $candidates += (Join-Path (Split-Path (Split-Path $git.Source)) 'usr\bin\bash.exe')
+        }
+        foreach ($path in $candidates) {
+            if ($path -and (Test-Path $path)) { return $path }
+        }
+        # Last resort: anything named bash that is not the WSL launcher.
+        foreach ($found in @(Get-Command bash -All -ErrorAction SilentlyContinue)) {
+            if ($found.Source -and $found.Source -notmatch '\\(System32|SysWOW64|WindowsApps)\\') {
+                return $found.Source
+            }
+        }
+        return $null
+    }
+
     $modes = @{}
     foreach ($role in @('reviewer', 'coder')) { $modes[$role] = Get-RoleMode $role }
     $routed = @($modes.Keys | Where-Object { $modes[$_] -eq 'router' } | Sort-Object)
@@ -79,12 +110,12 @@ try {
             # Git Bash ships with Git for Windows, which anyone cloning this
             # already has.
             $script = "./$($Args[0]).sh"
-            $bash = Get-Command bash -ErrorAction SilentlyContinue
+            $bash = Get-GitBash
             if (-not $bash) {
-                Write-Error "$($Args[0]) needs bash. Install Git for Windows, or run $script from Git Bash / WSL."
+                Write-Error "$($Args[0]) needs Git Bash. Install Git for Windows, or run $script from Git Bash."
                 exit 1
             }
-            & $bash.Source $script @rest
+            & $bash $script @rest
         }
         { $_ -in @($null, '', '-h', '--help') } {
             Write-Host 'usage: pingpong up|down|logs'
