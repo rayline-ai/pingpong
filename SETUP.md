@@ -29,6 +29,42 @@ cp .env.sample .env        # no key needed yet
 accounts and tokens that can only be minted once Forgejo has booted, which is why
 this is two passes.
 
+## Choosing the brains
+
+Skip this and both roles run on ollama. To put either of them on a hosted model
+instead:
+
+```bash
+./pingpong model            # walks both roles through the endpoints and models
+./pingpong model --show     # what each role is on now, and whether its key is set
+```
+
+It writes `rayline/pingpong.json`, and then asks for whatever key that choice
+needs and writes that to `.env` — so the choice and its cost are one step rather
+than a config edit that fails at the next `up`. One role at a time, without the
+questions:
+
+```bash
+./pingpong model coder openai-direct gpt-5.6
+./pingpong model reviewer anthropic-direct claude-opus-5
+```
+
+Two things are worth knowing before you pick:
+
+- **It is instance-wide, not per-repository.** There is one routing config and it
+  is mounted into both agents, so every repository this instance reviews gets the
+  same two brains.
+- **Running the two roles on the same model costs you the point of the exercise.**
+  A model reviewing its own work shares its own blind spots; the value here is
+  that the reviewer notices what the coder did not.
+
+`rld` reads that config once, when it starts, so the agents keep the old routing
+until they are recreated — `docker compose up -d reviewer coder`, which the
+command reminds you of. Each agent then reports at startup which endpoint it
+resolved to and whether what it needs is there: the named key, or, for ollama,
+that the host answers and has the model. `./pingpong doctor` shows the same two
+lines afterwards.
+
 ## Ports and address
 
 Forgejo is on **23000**, the engine on **23080**, Forgejo's SSH on **23022** —

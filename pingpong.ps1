@@ -1,6 +1,6 @@
-# Thin wrapper. `pingpong up|down|logs` drive compose, `accounts` and `onboard`
-# run on the host; anything else is passed straight to the CLI inside the
-# running API container.
+# Thin wrapper. `pingpong up|down|logs` drive compose, `accounts`, `model` and
+# `onboard` run on the host; anything else is passed straight to the CLI inside
+# the running API container.
 [CmdletBinding()]
 param([Parameter(ValueFromRemainingArguments = $true)][string[]]$Args)
 
@@ -17,8 +17,8 @@ try {
             if ($rest.Count -eq 0) { $rest = @('api') }
             docker compose logs -f @rest
         }
-        { $_ -in @('accounts', 'onboard') } {
-            # Host-side: they need this machine's folder, ~/.netrc and
+        { $_ -in @('accounts', 'model', 'onboard') } {
+            # Host-side: they need this machine's folder, ~/.netrc, .env and
             # `docker compose exec`, none of which the API container can see.
             # Git Bash ships with Git for Windows, which anyone cloning this
             # already has.
@@ -33,6 +33,7 @@ try {
         { $_ -in @($null, '', '-h', '--help') } {
             Write-Host 'usage: pingpong up|down|logs'
             Write-Host '       pingpong accounts [--user someone@example.com]'
+            Write-Host '       pingpong model [reviewer|coder <endpoint> <model>]'
             Write-Host '       pingpong onboard ../some-repo'
             Write-Host '       pingpong doctor'
             Write-Host '       pingpong round owner/repo#123'

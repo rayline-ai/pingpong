@@ -1,0 +1,336 @@
+"""Tests for `pingpong model`: routing edits, the .env rewrite, and the shipped
+config staying coherent.
+
+Everything here runs without Docker, Rayline or a model.
+"""
+import io
+import json
+import os
+import shutil
+import sys
+import tempfile
+import unittest
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from src import models  # noqa: E402
+
+REPO = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+
+CONFIG = {
+    "_comment": ["prose the operator may have edited", "second line"],
+    "endpoints": [
+        {"id": "ollama-local", "protocol": "anthropic_messages",
+         "base_url": "http://host.docker.internal:11434",
+         "models": ["qwen3.5:9b-32k", "qwen2.5-coder:7b"]},
+        {"id": "openai-direct", "protocol": "openai_chat",
+         "base_url": "https://api.openai.com",
+         "api_key_env": "RAYLINE_OPENAI_API_KEY", "auth": "bearer",
+         "models": ["gpt-5.6", "gpt-5.6-mini"]},
+        {"id": "rayline-cloud", "protocol": "anthropic_messages",
+         "base_url": "https://api.rayline.ai",
+         "api_key_env": "RAYLINE_ROUTER_API_KEY", "auth": "api_key",
+         "models": ["rayline-router"]},
+    ],
+    "routes": {
+        "main": {"endpoint": "ollama-local", "model": "qwen3.5:9b-32k",
+                 "router": "rayline-local"},
+        "subagent": {"endpoint": "ollama-local", "model": "qwen3.5:9b-32k",
+                     "router": "rayline-local"},
+        "model_routes": {
+            "reviewer-brain": {"endpoint": "ollama-local", "model": "qwen3.5:9b-32k",
+                               "router": "rayline-local"},
+            "coder-brain": {"endpoint": "ollama-local", "model": "qwen3.5:9b-32k",
+                            "router": "rayline-local"},
+        },
+    },
+}
+
+ENV = """\
+# A comment the operator wrote.
+RAYLINE_ROUTER_API_KEY=
+
+# Another comment.
+OPENAI_API_KEY=
+MAX_ROUNDS=3
+"""
+
+
+class Sandbox(unittest.TestCase):
+    """Points the module at a scratch config and .env, so nothing here can touch
+    the operator's real ones."""
+
+    def setUp(self):
+        self.dir = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, self.dir, True)
+        self.config_path = os.path.join(self.dir, "pingpong.json")
+        self.env_path = os.path.join(self.dir, ".env")
+        with io.open(self.config_path, "w", encoding="utf-8") as handle:
+            json.dump(CONFIG, handle, indent=2)
+        with io.open(self.env_path, "w", encoding="utf-8", newline="") as handle:
+            handle.write(ENV)
+
+        for name, value in (("CONFIG_PATH", self.config_path),
+                            ("ENV_PATH", self.env_path)):
+            original = getattr(models, name)
+            setattr(models, name, value)
+            self.addCleanup(setattr, models, name, original)
+
+    def written(self):
+        return models.load(self.config_path)
+
+    def env_text(self):
+        with io.open(self.env_path, encoding="utf-8") as handle:
+            return handle.read()
+
+    def run_cli(self, argv, answers=()):
+        """Drive main() with scripted answers and collect what it printed."""
+        replies = iter(answers)
+        lines = []
+
+        def ask(prompt):
+            try:
+                return next(replies)
+            except StopIteration:
+                raise AssertionError("main() asked more than expected: %r" % prompt)
+
+        code = models.main(list(argv), ask=ask, out=lines.append)
+        return code, "\n".join(lines)
+
+
+class TestRoutes(Sandbox):
+    def test_one_role_moves_alone(self):
+        cfg = self.written()
+        models.set_route(cfg, "coder", "openai-direct", "gpt-5.6")
+        self.assertEqual(models.route(cfg, "coder"), ("openai-direct", "gpt-5.6"))
+        self.assertEqual(models.route(cfg, "reviewer"),
+                         ("ollama-local", "qwen3.5:9b-32k"))
+
+    def test_shared_routes_stay_put_while_the_roles_disagree(self):
+        # main/subagent are per-config and there is one config for two
+        # containers, so there is no per-role answer to give here.
+        cfg = self.written()
+        models.set_route(cfg, "coder", "openai-direct", "gpt-5.6")
+        self.assertEqual(cfg["routes"]["main"]["endpoint"], "ollama-local")
+        self.assertEqual(cfg["routes"]["subagent"]["endpoint"], "ollama-local")
+
+    def test_shared_routes_follow_once_both_agree(self):
+        cfg = self.written()
+        models.set_route(cfg, "coder", "openai-direct", "gpt-5.6")
+        models.set_route(cfg, "reviewer", "openai-direct", "gpt-5.6")
+        for shared in ("main", "subagent"):
+            self.assertEqual(cfg["routes"][shared],
+                             {"endpoint": "openai-direct", "model": "gpt-5.6",
+                              "router": "rayline-local"})
+
+    def test_router_is_kept_not_invented(self):
+        cfg = self.written()
+        cfg["routes"]["model_routes"]["coder-brain"]["router"] = "somewhere-else"
+        models.set_route(cfg, "coder", "openai-direct", "gpt-5.6")
+        self.assertEqual(cfg["routes"]["model_routes"]["coder-brain"]["router"],
+                         "somewhere-else")
+
+    def test_unknown_endpoint_names_the_ones_that_exist(self):
+        cfg = self.written()
+        with self.assertRaises(models.ModelError) as caught:
+            models.set_route(cfg, "coder", "openai-dierct", "gpt-5.6")
+        self.assertIn("openai-direct", str(caught.exception))
+
+    def test_unknown_role(self):
+        cfg = self.written()
+        with self.assertRaises(models.ModelError):
+            models.set_route(cfg, "referee", "openai-direct", "gpt-5.6")
+
+    def test_needed_key_is_the_dotenv_name_not_the_container_one(self):
+        # The agent sees RAYLINE_OPENAI_API_KEY; naming that would send the
+        # operator looking for something that is not in .env.
+        cfg = self.written()
+        models.set_route(cfg, "coder", "openai-direct", "gpt-5.6")
+        self.assertEqual(models.needed_key(cfg, "coder"), "OPENAI_API_KEY")
+
+    def test_keyless_endpoint_needs_no_key(self):
+        self.assertIsNone(models.needed_key(self.written(), "coder"))
+
+    def test_save_keeps_everything_it_did_not_touch(self):
+        cfg = self.written()
+        models.set_route(cfg, "coder", "openai-direct", "gpt-5.6")
+        models.save(cfg, self.config_path)
+        again = self.written()
+        self.assertEqual(again["_comment"], CONFIG["_comment"])
+        self.assertEqual(again["endpoints"], CONFIG["endpoints"])
+
+
+class TestEnvSet(Sandbox):
+    def test_replaces_in_place_and_keeps_the_prose(self):
+        models.env_set("OPENAI_API_KEY", "sk-test", path=self.env_path,
+                       backup=os.path.join(self.dir, "backup"))
+        text = self.env_text()
+        self.assertIn("OPENAI_API_KEY=sk-test\n", text)
+        self.assertIn("# A comment the operator wrote.", text)
+        self.assertIn("# Another comment.", text)
+        self.assertIn("MAX_ROUNDS=3", text)
+
+    def test_appends_a_key_that_is_not_there(self):
+        models.env_set("ANTHROPIC_API_KEY", "sk-ant", path=self.env_path,
+                       backup=os.path.join(self.dir, "backup"))
+        self.assertIn("ANTHROPIC_API_KEY=sk-ant\n", self.env_text())
+
+    def test_one_backup_per_run_not_per_value(self):
+        # .env holds tokens: three writes must not leave three copies of it.
+        backup = models.env_set("OPENAI_API_KEY", "one", path=self.env_path,
+                                stamp="20260818000000")
+        second = models.env_set("MAX_ROUNDS", "9", path=self.env_path, backup=backup)
+        self.assertEqual(backup, second)
+        with io.open(backup, encoding="utf-8") as handle:
+            self.assertEqual(handle.read(), ENV)
+
+    def test_env_value_reads_the_file(self):
+        self.assertIsNone(models.env_value("OPENAI_API_KEY", path=self.env_path)
+                          or None)
+        models.env_set("OPENAI_API_KEY", "sk-test", path=self.env_path,
+                       backup=os.path.join(self.dir, "backup"))
+        self.assertEqual(models.env_value("OPENAI_API_KEY", path=self.env_path),
+                         "sk-test")
+
+    def test_missing_env_is_an_error_not_a_new_file(self):
+        os.remove(self.env_path)
+        with self.assertRaises(models.ModelError):
+            models.env_set("OPENAI_API_KEY", "x", path=self.env_path)
+
+
+class TestCLI(Sandbox):
+    def test_show_changes_nothing(self):
+        before = self.env_text()
+        code, output = self.run_cli(["--show"])
+        self.assertEqual(code, 0)
+        self.assertIn("ollama-local", output)
+        self.assertEqual(self.written(), CONFIG)
+        self.assertEqual(self.env_text(), before)
+
+    def test_non_interactive_writes_the_route(self):
+        code, output = self.run_cli(["coder", "openai-direct", "gpt-5.6"],
+                                    answers=["sk-test"])
+        self.assertEqual(code, 0)
+        self.assertEqual(models.route(self.written(), "coder"),
+                         ("openai-direct", "gpt-5.6"))
+        self.assertIn("docker compose up -d reviewer coder", output)
+
+    def test_it_asks_for_the_key_the_choice_needs(self):
+        code, _ = self.run_cli(["coder", "openai-direct", "gpt-5.6"],
+                               answers=["sk-test"])
+        self.assertEqual(models.env_value("OPENAI_API_KEY", path=self.env_path),
+                         "sk-test")
+
+    def test_a_key_already_in_env_is_not_asked_for(self):
+        models.env_set("OPENAI_API_KEY", "sk-already", path=self.env_path,
+                       backup=os.path.join(self.dir, "backup"))
+        # No answers: an unexpected prompt fails the test rather than hanging.
+        self.run_cli(["coder", "openai-direct", "gpt-5.6"])
+        self.assertEqual(models.env_value("OPENAI_API_KEY", path=self.env_path),
+                         "sk-already")
+
+    def test_a_keyless_choice_asks_for_nothing(self):
+        self.run_cli(["coder", "ollama-local", "qwen2.5-coder:7b"])
+        self.assertEqual(models.route(self.written(), "coder"),
+                         ("ollama-local", "qwen2.5-coder:7b"))
+
+    def test_skipping_the_key_still_writes_the_route(self):
+        # Half-done beats not-done: the agent says which .env value is empty at
+        # startup, so a skip is recoverable and a lost choice is not.
+        code, output = self.run_cli(["coder", "openai-direct", "gpt-5.6"],
+                                    answers=[""])
+        self.assertEqual(code, 0)
+        self.assertIn("skipped", output)
+        self.assertEqual(models.route(self.written(), "coder"),
+                         ("openai-direct", "gpt-5.6"))
+
+    def test_a_model_off_the_list_is_written_with_a_note(self):
+        # The list is a menu, not an allowlist: providers ship models faster
+        # than this file is edited.
+        code, output = self.run_cli(["coder", "openai-direct", "gpt-6"],
+                                    answers=["sk-test"])
+        self.assertIn("not in", output)
+        self.assertEqual(models.route(self.written(), "coder")[1], "gpt-6")
+
+    def test_wrong_argument_count(self):
+        with self.assertRaises(models.ModelError):
+            self.run_cli(["coder", "openai-direct"])
+
+    def test_interactive_picks_both_roles(self):
+        # reviewer: endpoint 2 (openai-direct), model 1 (gpt-5.6)
+        # coder:    endpoint 1 (ollama-local), model 2 (qwen2.5-coder:7b)
+        code, output = self.run_cli([], answers=["2", "1", "1", "2", "sk-test"])
+        self.assertEqual(code, 0)
+        cfg = self.written()
+        self.assertEqual(models.route(cfg, "reviewer"), ("openai-direct", "gpt-5.6"))
+        self.assertEqual(models.route(cfg, "coder"),
+                         ("ollama-local", "qwen2.5-coder:7b"))
+        # The roles disagree, so the shared routes were left alone.
+        self.assertEqual(cfg["routes"]["main"]["endpoint"], "ollama-local")
+        self.assertEqual(models.env_value("OPENAI_API_KEY", path=self.env_path),
+                         "sk-test")
+
+    def test_interactive_empty_answer_keeps_what_is_there(self):
+        code, _ = self.run_cli([], answers=["", "", "", ""])
+        cfg = self.written()
+        self.assertEqual(models.route(cfg, "reviewer"),
+                         ("ollama-local", "qwen3.5:9b-32k"))
+        self.assertEqual(models.route(cfg, "coder"),
+                         ("ollama-local", "qwen3.5:9b-32k"))
+
+    def test_interactive_rejects_a_number_off_the_menu_and_asks_again(self):
+        code, output = self.run_cli([], answers=["9", "1", "1", "1", "1"])
+        self.assertIn("not one of", output)
+        self.assertEqual(models.route(self.written(), "reviewer")[0], "ollama-local")
+
+    def test_interactive_other_takes_a_typed_model(self):
+        # reviewer: endpoint 2, model "other" (3rd of 2 models + other), typed
+        code, output = self.run_cli([], answers=["2", "3", "gpt-6-preview",
+                                                 "1", "1", "sk-test"])
+        self.assertEqual(models.route(self.written(), "reviewer"),
+                         ("openai-direct", "gpt-6-preview"))
+        self.assertIn("menu, not a limit", output)
+
+
+class TestShippedConfig(unittest.TestCase):
+    """The file as it ships has to be coherent, or the first `up` is the one
+    that finds out."""
+
+    def setUp(self):
+        self.cfg = models.load(os.path.join(REPO, "rayline", "pingpong.json"))
+
+    def test_both_roles_name_an_endpoint_that_exists(self):
+        for role in ("reviewer", "coder"):
+            endpoint_id, model = models.route(self.cfg, role)
+            spec = models.endpoint(self.cfg, endpoint_id)
+            self.assertIn(model, spec.get("models") or [],
+                          "%s is on %s, which does not list %s"
+                          % (role, endpoint_id, model))
+
+    def test_every_endpoint_key_has_a_dotenv_name(self):
+        for spec in models.endpoints(self.cfg):
+            key_env = spec.get("api_key_env")
+            if key_env:
+                self.assertIn(key_env, models.DOTENV_NAMES,
+                              "%s draws on %s, which docker-compose.yml has to "
+                              "map from a .env name" % (spec["id"], key_env))
+
+    def test_every_dotenv_name_is_in_the_sample(self):
+        # An endpoint whose key is never mentioned in .env.sample is a key
+        # nobody knows to set.
+        with io.open(os.path.join(REPO, ".env.sample"), encoding="utf-8") as handle:
+            sample = handle.read()
+        for spec in models.endpoints(self.cfg):
+            key_env = spec.get("api_key_env")
+            if key_env:
+                self.assertIn(models.DOTENV_NAMES[key_env] + "=", sample)
+
+    def test_it_ships_on_an_endpoint_that_needs_no_key(self):
+        # A fresh clone must be able to get to a first round without an account
+        # anywhere, which is the whole reason the default is local.
+        for role in ("reviewer", "coder"):
+            self.assertIsNone(models.needed_key(self.cfg, role))
+
+
+if __name__ == "__main__":
+    unittest.main()

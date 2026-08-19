@@ -89,6 +89,10 @@ services:
     volumes:
       - work:/work
       - ./prompts:/app/prompts:ro
+      # Read-only, and read by `doctor` alone: the engine does not route
+      # anything, but "which brain is each role on" is the first question when a
+      # round comes back wrong, and it should not need a second terminal.
+      - ./rayline/pingpong.json:/etc/pingpong/rayline.json:ro
       # The API drives the agents with `docker exec`, mirroring the `docker sandbox
       # exec hermes` pattern the existing Hermes setup already relies on.
       - /var/run/docker.sock:/var/run/docker.sock

@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
-# Thin wrapper. `pingpong up|down|logs` drive compose, and `accounts` and
-# `onboard` run on the host — they need the operator's folder, ~/.netrc and
-# `docker compose exec`, none of which the API container can see. Anything else
-# is passed straight to the CLI inside that container.
+# Thin wrapper. `pingpong up|down|logs` drive compose, and `accounts`, `model`
+# and `onboard` run on the host — they need the operator's folder, ~/.netrc,
+# `.env` and `docker compose exec`, none of which the API container can see.
+# Anything else is passed straight to the CLI inside that container.
 set -euo pipefail
 
 cd "$(dirname "$0")"
@@ -12,10 +12,12 @@ case "${1:-}" in
     down)    shift; exec docker compose down "$@" ;;
     logs)    shift; exec docker compose logs -f "${@:-api}" ;;
     accounts) shift; exec ./accounts.sh "$@" ;;
+    model)    shift; exec ./model.sh "$@" ;;
     onboard)  shift; exec ./onboard.sh "$@" ;;
     ""|-h|--help)
         echo "usage: pingpong up|down|logs"
         echo "       pingpong accounts [--user someone@example.com]"
+        echo "       pingpong model [reviewer|coder <endpoint> <model>]"
         echo "       pingpong onboard ../some-repo"
         echo "       pingpong doctor"
         echo "       pingpong round owner/repo#123"

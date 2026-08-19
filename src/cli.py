@@ -3,9 +3,13 @@ import argparse
 import re
 import sys
 
-from . import agents, config, forgejo, gitops, loop, webhook
+from . import agents, config, forgejo, gitops, loop, models, webhook
 
 PR_RE = re.compile(r"^([^/\s]+)/([^#\s]+)#(\d+)$")
+
+# Where docker-compose.yml mounts rayline/pingpong.json in this container. The
+# same path the agents see, and read-only in both.
+ROUTING_CONFIG = "/etc/pingpong/rayline.json"
 
 
 def log(msg):
@@ -53,11 +57,27 @@ def cmd_round(args, cfg):
     return 0 if result.get("action") == "approved" else 1
 
 
+def _brain(role):
+    """What a role's alias resolves to, read from the mounted routing config.
+    Best-effort: it is a report, and a config this cannot parse is Rayline's
+    business, not something to fail `doctor` over."""
+    try:
+        cfg = models.load(ROUTING_CONFIG)
+        endpoint_id, model = models.route(cfg, role)
+        if not endpoint_id:
+            return "no endpoint — %s names one that is not there" % models.ROLES[role]
+        return "%s / %s" % (endpoint_id, model)
+    except (models.ModelError, KeyError):
+        return "unknown (%s not readable here)" % ROUTING_CONFIG
+
+
 def cmd_doctor(args, cfg):
     ok = True
     log("forgejo:   %s" % cfg.forgejo_url)
     log("reviewer:  %s (alias reviewer-brain)" % cfg.reviewer_container)
+    log("  brain:   %s" % _brain("reviewer"))
     log("coder:     %s (alias coder-brain)" % cfg.coder_container)
+    log("  brain:   %s" % _brain("coder"))
     log("rounds:    %d" % cfg.max_rounds)
     log("work root: %s" % cfg.work_root)
 

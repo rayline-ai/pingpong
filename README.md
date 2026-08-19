@@ -73,6 +73,27 @@ line in the alias, not new plumbing. Each names the credential it draws on, and
 the agent reports at startup which one it needs and whether it is set, rather
 than failing a round half an hour later.
 
+### Choosing them
+
+```bash
+./pingpong model            # walks both roles through the endpoints and models
+./pingpong model --show     # what each is on now, and whether its key is set
+./pingpong model coder openai-direct gpt-5.6
+```
+
+Same edit as by hand, with the three things a hand-edit gets wrong done for you:
+the endpoint has to exist, the key it names goes into `.env` in the same step,
+and `routes.main`/`routes.subagent` move with the roles only when both agree —
+there is one config for two containers, so a per-role answer does not exist.
+
+It is instance-wide for that same reason: every repository the instance reviews
+gets the same two brains. And pointing both roles at one model costs you the
+point of the exercise — a model reviewing its own work shares its own blind
+spots.
+
+`rld` reads the config once, at start, so recreate the agents afterwards:
+`docker compose up -d reviewer coder`.
+
 ### Where the keys are named
 
 `.env` uses the conventional names. Inside the agent containers they are
@@ -94,47 +115,32 @@ key under that name and the same bypass becomes a round that quietly succeeds
 against `api.anthropic.com`, ignoring every route in the config. The agent
 refuses to start if it finds that name overridden.
 
-### Running a role on Anthropic or OpenAI directly
-
-Put `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in `.env`, point the alias at the
-endpoint, and recreate that agent:
-
-```jsonc
-"reviewer-brain": { "endpoint": "anthropic-direct", "model": "claude-opus-5" }
-"coder-brain":    { "endpoint": "openai-direct",    "model": "gpt-5.6" }
-```
+### Running a role on a hosted provider
 
 ```bash
+./pingpong model reviewer anthropic-direct claude-opus-5
+./pingpong model coder    openai-direct    gpt-5.6
+./pingpong model coder    openrouter       moonshotai/kimi-k3
+./pingpong model reviewer rayline-cloud    rayline-router
 docker compose up -d reviewer coder
 ```
 
-That bypasses Rayline's *routing*, not Rayline: `rld` still terminates Hermes'
-Anthropic protocol and translates, which is all `openai_chat` costs to use.
+Going direct to Anthropic or OpenAI bypasses Rayline's *routing*, not Rayline:
+`rld` still terminates Hermes' Anthropic protocol and translates, which is all
+`openai_chat` costs to use. `rayline-router` is the opposite trade — not a model
+but the cloud-side auto-router, picking per request, which also means the model
+that answered stops appearing in the local `rld` log.
 
-### Running a role on OpenRouter
-
-Put `OPENROUTER_API_KEY` in `.env`, point an alias at the `openrouter` endpoint
-already in the config, and recreate that agent so it picks up the key:
-
-```jsonc
-"coder-brain": { "endpoint": "openrouter", "model": "moonshotai/kimi-k3" }
-```
-
-```bash
-docker compose up -d coder
-```
+Each endpoint's `models` list is that command's menu, not an allowlist: a model
+that is not on it is written as given, with a note.
 
 ### Running a role on a local model
 
-Needs [ollama](https://ollama.com) on the host. Point an alias at the
-`ollama-local` endpoint already in the config, then restart that agent:
-
-```jsonc
-"coder-brain": { "endpoint": "ollama-local", "model": "qwen3.5:9b-32k" }
-```
+Needs [ollama](https://ollama.com) on the host, which is where both roles start:
 
 ```bash
-docker compose restart coder
+./pingpong model coder ollama-local qwen3.5:9b-32k
+docker compose up -d coder
 ```
 
 **Give the model a 32k context window or it will not call tools.** ollama sizes
@@ -160,6 +166,7 @@ src/loop.py               one round
 src/forgejo.py            PR reads, review events, round counting
 src/gitops.py             all git, on the API's side of the mount
 src/agents.py             `docker exec hermes -z` — knows nothing about models
+src/models.py             `pingpong model`: which brain each role runs on
 accounts.sh               creates the accounts and the tokens .env needs
 onboard.sh                puts a repository on the instance; host-side, so it
                           can see your folder
@@ -178,6 +185,7 @@ else runs in containers.
 cp .env.sample .env        # no key needed yet
 ./pingpong up              # builds the images; first run pulls a lot
 ./pingpong accounts        # the admin, the two bots and their tokens, and you
+./pingpong model           # optional: put a role on a hosted model instead
 ./pingpong up              # again, so the engine picks those up
 ./pingpong onboard ../some-repo
 ./pingpong doctor
@@ -245,6 +253,7 @@ never broken.
 ./pingpong up                      # build and start everything
 ./pingpong accounts                # the admin, the two bots and their tokens, you
 ./pingpong accounts --user x@y.z   # add a person later, --token if they are elsewhere
+./pingpong model                   # choose each role's endpoint and model
 ./pingpong onboard ../some-repo    # put a repository on the instance
 ./pingpong doctor                  # config, containers, Forgejo reachability
 ./pingpong round owner/repo#123    # run one round by hand
@@ -254,10 +263,11 @@ never broken.
 
 `round` exits non-zero unless the PR ended approved, so it can gate a script.
 
-`up`, `down`, `logs`, `accounts` and `onboard` run on the host; everything else
-runs inside the API container. Those last two have to: the container can see
-neither the folder being onboarded nor the `~/.netrc` the push authenticates
-with, and cannot run Forgejo's CLI or rewrite the operator's `.env`.
+`up`, `down`, `logs`, `accounts`, `model` and `onboard` run on the host;
+everything else runs inside the API container. The last three have to: the
+container cannot see the folder being onboarded or the `~/.netrc` the push
+authenticates with, cannot run Forgejo's CLI, and cannot rewrite the operator's
+`.env` — and `model` also has to work before there is a container at all.
 
 ## Tests
 

@@ -52,27 +52,22 @@
     "to be explicit: it reads ANTHROPIC_API_KEY, which in these containers is the",
     "injector placeholder, so it looks configured and is not.",
     "",
-    "TO SWITCH A ROLE TO A SPECIFIC CLOUD MODEL: replace `rayline-router` in that",
-    "alias's `model` with any id from the rayline-cloud `models` list below, e.g.",
-    "  \"coder-brain\": { \"endpoint\": \"rayline-cloud\", \"model\": \"gpt-5.6-terra\", ... }",
-    "That also puts the real model back in the rld log.",
+    "SWITCHING A ROLE, the short way — `./pingpong model` with no arguments walks",
+    "both roles through the endpoints and models below, asks for whatever key the",
+    "choice needs, and writes it to .env. One role at a time, non-interactively:",
+    "  ./pingpong model coder openai-direct gpt-5.6",
+    "  ./pingpong model reviewer anthropic-direct claude-opus-5",
+    "  ./pingpong model --show",
+    "The `models` list on each endpoint is that command's menu, not an allowlist:",
+    "a model that is not on it is written as given, with a note.",
     "",
-    "TO SWITCH A ROLE STRAIGHT TO ANTHROPIC OR OPENAI: set ANTHROPIC_API_KEY or",
-    "OPENAI_API_KEY in .env, then point the alias at that endpoint, e.g.",
-    "  \"reviewer-brain\": { \"endpoint\": \"anthropic-direct\", \"model\": \"claude-opus-5\", ... }",
-    "  \"coder-brain\":    { \"endpoint\": \"openai-direct\", \"model\": \"gpt-5.6\", ... }",
-    "and `docker compose up -d reviewer coder` so the containers pick up the key.",
-    "This bypasses Rayline's routing, not Rayline: rld still speaks Anthropic to",
-    "Hermes and translates, which is what `openai_chat` costs nothing to use.",
+    "Then `docker compose up -d reviewer coder` — rld reads this file once, when it",
+    "starts, so a running agent is still on the old routing until it is recreated.",
     "",
-    "TO SWITCH A ROLE TO OPENROUTER: set OPENROUTER_API_KEY in .env, then",
-    "  \"coder-brain\": { \"endpoint\": \"openrouter\", \"model\": \"moonshotai/kimi-k3\", ... }",
-    "and `docker compose up -d coder` so the container picks up the key.",
-    "",
-    "TO SWITCH A ROLE TO A LOCAL MODEL: point it at the `ollama-local` endpoint,",
-    "  \"coder-brain\": { \"endpoint\": \"ollama-local\", \"model\": \"qwen3.5:9b-32k\", ... }",
-    "then `docker compose restart coder` so rld reloads this file. ollama speaks",
-    "Anthropic natively on /v1/messages, so nothing translates.",
+    "Going direct to Anthropic or OpenAI bypasses Rayline's ROUTING, not Rayline:",
+    "rld still speaks Anthropic to Hermes and translates, which is what makes",
+    "`openai_chat` cost nothing to use. ollama speaks Anthropic natively on",
+    "/v1/messages, so nothing translates there at all.",
     "",
     "THE `-32k` SUFFIX IS LOAD-BEARING. The two unsuffixed tags above (qwen2.5-coder:7b,",
     "gemma4:26b-a4b-it-qat) are stock and will NOT call tools until you pin them the",
@@ -90,6 +85,17 @@
     "With that pinned, qwen3.5:9b-32k drove a full unattended round on PR #7."
   ],
   "endpoints": [
+    {
+      "id": "ollama-local",
+      "protocol": "anthropic_messages",
+      "base_url": "http://host.docker.internal:11434",
+      "models": [
+        "qwen3.5:9b-32k",
+        "qwen3.6:35b-a3b-32k",
+        "qwen2.5-coder:7b",
+        "gemma4:26b-a4b-it-qat"
+      ]
+    },
     {
       "id": "rayline-cloud",
       "protocol": "anthropic_messages",
@@ -136,17 +142,6 @@
         "moonshotai/kimi-k3",
         "z-ai/glm-5.2",
         "anthropic/claude-sonnet-4.6"
-      ]
-    },
-    {
-      "id": "ollama-local",
-      "protocol": "anthropic_messages",
-      "base_url": "http://host.docker.internal:11434",
-      "models": [
-        "qwen3.5:9b-32k",
-        "qwen3.6:35b-a3b-32k",
-        "qwen2.5-coder:7b",
-        "gemma4:26b-a4b-it-qat"
       ]
     }
   ],
