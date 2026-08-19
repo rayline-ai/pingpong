@@ -71,7 +71,7 @@ class Config:
         # Forgejo logins of the two bot accounts. Only used to ignore the bots'
         # own comments: a `@pingpong` mention the bot writes must not trigger a
         # round, or the loop would feed itself. Default to the container names,
-        # which the README's setup makes match.
+        # which SETUP.md's account names make match.
         self.reviewer_login = os.environ.get("REVIEWER_LOGIN", self.reviewer_container)
         self.coder_login = os.environ.get("CODER_LOGIN", self.coder_container)
 

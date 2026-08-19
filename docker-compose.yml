@@ -27,7 +27,7 @@ services:
       # who reaches the port can take the instance. That also means the sign-up
       # page cannot mint the first admin — Forgejo only grants admin to the
       # first *registered* account, and there will not be one. Create it with
-      # the CLI instead (see README "Setup"):
+      # the CLI instead (see SETUP.md):
       #   docker compose exec -u git forgejo \
       #       forgejo admin user create --admin --username pingpong-admin \
       #       --email pingpong-admin@local --random-password

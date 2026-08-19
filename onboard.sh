@@ -80,7 +80,7 @@ match an account against — pass --owner <login>"
     OWNER=$(fj_admin user list 2>/dev/null \
             | awk -v e="$EMAIL" '$3 == e { print $2; exit }' | tr -d '\r')
     [ -n "$OWNER" ] || die "no Forgejo account has the address $TARGET commits with
-($EMAIL). Create one — README step 2 — or pass --owner <login>. Do not onboard
+($EMAIL). Create one — SETUP.md step 2 — or pass --owner <login>. Do not onboard
 under someone else's account: the PR would stop saying who wrote what."
     ok "$OWNER (matched on $EMAIL)"
 else
@@ -193,7 +193,7 @@ case "$STATUS" in
     200) : ;;
     401|403) die "the token in $NETRC is not usable: $BODY
 If the account has never logged in, Forgejo refuses its API calls until the
-forced password change is done — README step 2." ;;
+forced password change is done — SETUP.md step 2." ;;
     *) die "$F is not answering ($STATUS). ./pingpong up, then try again." ;;
 esac
 
@@ -231,7 +231,7 @@ for u in "$REVIEWER" "$CODER"; do
         # Without write the reviewer cannot post a review and the coder cannot
         # push, and the round then fails partway instead of at the start.
         204|201) ok "$u can write" ;;
-        404|422) die "no account named $u — create the bots first, README step 1" ;;
+        404|422) die "no account named $u — create the bots first, SETUP.md step 1" ;;
         *)       die "could not add $u ($STATUS): $BODY" ;;
     esac
 done
