@@ -62,6 +62,50 @@ alias and Rayline resolves it. Changing a brain is a one-line edit here — no c
 change, no rebuild. `rayline-router` lets Rayline pick per request; name a real
 model instead (`gpt-5.6-terra`, `z-ai/glm-5.2`, …) to pin one.
 
+Five endpoints ship in that file — `rayline-cloud`, `anthropic-direct`,
+`openai-direct`, `openrouter` and `ollama-local` — so switching provider is a
+line in the alias, not new plumbing. Each names the credential it draws on, and
+the agent reports at startup which one it needs and whether it is set, rather
+than failing a round half an hour later.
+
+### Where the keys are named
+
+`.env` uses the conventional names. Inside the agent containers they are
+`RAYLINE_`-prefixed, and `docker-compose.yml` is the one-line-each mapping:
+
+| `.env` | in the agent |
+| --- | --- |
+| `RAYLINE_ROUTER_API_KEY` | `RAYLINE_ROUTER_API_KEY` |
+| `ANTHROPIC_API_KEY` | `RAYLINE_ANTHROPIC_API_KEY` |
+| `OPENAI_API_KEY` | `RAYLINE_OPENAI_API_KEY` |
+| `OPENROUTER_API_KEY` | `RAYLINE_OPENROUTER_API_KEY` |
+
+The prefix is a rule with one job: in an agent container, every credential the
+*router* uses carries it, and an unprefixed provider key belongs to the agent
+runtime. `ANTHROPIC_API_KEY` is why. Hermes will not start without one and sends
+it as `x-api-key` to the local injector, so the image bakes in a deliberate
+placeholder — which is what makes a bypassed router an instant `401`. Put a real
+key under that name and the same bypass becomes a round that quietly succeeds
+against `api.anthropic.com`, ignoring every route in the config. The agent
+refuses to start if it finds that name overridden.
+
+### Running a role on Anthropic or OpenAI directly
+
+Put `ANTHROPIC_API_KEY` or `OPENAI_API_KEY` in `.env`, point the alias at the
+endpoint, and recreate that agent:
+
+```jsonc
+"reviewer-brain": { "endpoint": "anthropic-direct", "model": "claude-opus-5" }
+"coder-brain":    { "endpoint": "openai-direct",    "model": "gpt-5.6" }
+```
+
+```bash
+docker compose up -d reviewer coder
+```
+
+That bypasses Rayline's *routing*, not Rayline: `rld` still terminates Hermes'
+Anthropic protocol and translates, which is all `openai_chat` costs to use.
+
 ### Running a role on OpenRouter
 
 Put `OPENROUTER_API_KEY` in `.env`, point an alias at the `openrouter` endpoint
