@@ -120,6 +120,45 @@ resolved to and whether what it needs is there: the named key, or, for ollama,
 that the host answers and has the model. `./pingpong doctor` shows the same two
 lines afterwards.
 
+## On a subscription instead
+
+Everything above buys tokens with a key. If you already pay for Claude or for
+ChatGPT, `AGENT_MODE` in `.env` puts the agents on that instead and takes Rayline
+out of the request entirely — there is no router, and `rayline/pingpong.json` is
+not read at all.
+
+```ini
+AGENT_MODE=claude-sub          # or codex-sub
+SUBSCRIPTION_MODEL=claude-sonnet-4-6
+```
+
+`claude-sub` needs nothing else: run `claude` on this host once and sign in, and
+`up` mounts that login into both agents. The credential is refreshed in place, so
+a refresh inside a container is a refresh for you.
+
+`codex-sub` needs one more step, after `up`:
+
+```bash
+./pingpong login           # a device code per agent — open the URL, enter the code
+```
+
+That is not an oversight. Codex rotates its refresh token on every refresh and
+does not write the new one back, so borrowing `~/.codex` the way `claude-sub`
+borrows `~/.claude` would work exactly once and then leave *your* `codex` command
+signed out. Each agent gets a session of its own, kept in a volume so the sign-in
+is once and not once per restart. Use `gpt-5.5` and not `gpt-5.5-codex` — a
+ChatGPT account is refused for every `-codex` id.
+
+What a subscription costs you, either way: **one account, two agents.** Both
+roles run the same model, so the review and the fix it asks for come from the
+same brain and agree with each other more than they should; every round counts
+against one subscription's limits; and the per-role split that the section above
+is entirely about stops existing. Check your plan's terms before leaving it
+running unattended.
+
+`./pingpong doctor` prints the mode, and in `codex-sub` whether each agent is
+signed in.
+
 ## Ports and address
 
 Forgejo is on **23000**, the engine on **23080**, Forgejo's SSH on **23022** —

@@ -22,6 +22,31 @@ find_python() {
     return 1
 }
 
+# AGENT_MODE decides both which compose files to use and which pre-flight checks
+# apply, and both decisions happen before compose runs — so this reads .env
+# rather than letting compose interpolate it. Only the assignment is read; the
+# rest of that file is prose and secrets.
+agent_mode() {
+    local value=""
+    if [ -f .env ]; then
+        value=$(sed -n 's/^AGENT_MODE=[[:space:]]*//p' .env | tail -1 | tr -d "\"'\r")
+    fi
+    echo "${value:-router}"
+}
+
+# One overlay per subscription mode, because the two modes want opposite things:
+# claude-sub mounts the host's login, codex-sub deliberately mounts nothing from
+# the host and puts Hermes' own session on a volume. Each file says why.
+# Naming the base file explicitly because a second -f replaces the default list
+# rather than adding to it.
+compose_files() {
+    case "$(agent_mode)" in
+        claude-sub) echo "-f docker-compose.yml -f docker-compose.claude-sub.yml" ;;
+        codex-sub)  echo "-f docker-compose.yml -f docker-compose.codex-sub.yml" ;;
+        *)          echo "-f docker-compose.yml" ;;
+    esac
+}
+
 case "${1:-}" in
     up)
         shift
@@ -31,26 +56,32 @@ case "${1:-}" in
         if [ -f .env ] && PY=$(find_python); then
             "$PY" -m src.address || true
         fi
-        # This one does refuse. No brain is chosen out of the box, and starting
-        # anyway buys nothing: the stack comes up and dies at the first review,
-        # which is the furthest possible place from the cause.
+        # These two do refuse, and only one of them applies. A brain has to come
+        # from somewhere and starting without one buys nothing: the stack comes
+        # up and dies at the first review, which is the furthest possible place
+        # from the cause.
         if PY=$(find_python); then
-            "$PY" -m src.models --check || exit 1
+            case "$(agent_mode)" in
+                claude-sub|codex-sub) "$PY" -m src.subscription || exit 1 ;;
+                *)                    "$PY" -m src.models --check || exit 1 ;;
+            esac
         fi
-        exec docker compose up -d --build "$@" ;;
-    down)    shift; exec docker compose down "$@" ;;
-    logs)    shift; exec docker compose logs -f "${@:-api}" ;;
+        exec docker compose $(compose_files) up -d --build "$@" ;;
+    down)    shift; exec docker compose $(compose_files) down "$@" ;;
+    logs)    shift; exec docker compose $(compose_files) logs -f "${@:-api}" ;;
     accounts) shift; exec ./accounts.sh "$@" ;;
     model)    shift; exec ./model.sh "$@" ;;
     onboard)  shift; exec ./onboard.sh "$@" ;;
+    login)    shift; exec ./login.sh "$@" ;;
     ""|-h|--help)
         echo "usage: pingpong up|down|logs"
         echo "       pingpong accounts [--user someone@example.com]"
         echo "       pingpong model [reviewer|coder <endpoint> <model>]"
+        echo "       pingpong login              (AGENT_MODE=codex-sub only)"
         echo "       pingpong onboard ../some-repo"
         echo "       pingpong doctor"
         echo "       pingpong round owner/repo#123"
         exit 0 ;;
 esac
 
-exec docker compose exec api python -m src.cli "$@"
+exec docker compose $(compose_files) exec api python -m src.cli "$@"

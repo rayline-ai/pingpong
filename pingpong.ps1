@@ -10,6 +10,24 @@ try {
     $rest = @()
     if ($Args.Count -gt 1) { $rest = $Args[1..($Args.Count - 1)] }
 
+    # AGENT_MODE decides both which compose files to use and which pre-flight
+    # check applies, and both happen before compose runs — so this reads .env
+    # rather than letting compose interpolate it.
+    $mode = 'router'
+    if (Test-Path '.env') {
+        $line = Select-String -Path '.env' -Pattern '^AGENT_MODE=' | Select-Object -Last 1
+        if ($line) { $mode = $line.Line -replace '^AGENT_MODE=\s*', '' -replace '["'']', '' }
+    }
+    if (-not $mode) { $mode = 'router' }
+    $subscription = $mode -in @('claude-sub', 'codex-sub')
+
+    # A second -f replaces the default list rather than adding to it, so the base
+    # file is named explicitly. One overlay per subscription mode: claude-sub
+    # mounts the host's login, codex-sub deliberately mounts nothing from the
+    # host and puts Hermes' own session on a volume.
+    $files = @('-f', 'docker-compose.yml')
+    if ($subscription) { $files += @('-f', "docker-compose.$mode.yml") }
+
     switch ($Args[0]) {
         'up'   {
             # Before compose reads .env: Forgejo bakes FORGEJO_ROOT_URL into
@@ -21,21 +39,23 @@ try {
                 if ($found) { $python = $found.Source; break }
             }
             if ($python -and (Test-Path '.env')) { & $python -m src.address }
-            # This one does refuse. No brain is chosen out of the box, and
-            # starting anyway buys nothing: the stack comes up and dies at the
-            # first review, the furthest possible place from the cause.
+            # These two do refuse, and only one of them applies. A brain has to
+            # come from somewhere and starting without one buys nothing: the
+            # stack comes up and dies at the first review, the furthest possible
+            # place from the cause.
             if ($python) {
-                & $python -m src.models --check
+                if ($subscription) { & $python -m src.subscription }
+                else               { & $python -m src.models --check }
                 if ($LASTEXITCODE -ne 0) { exit 1 }
             }
-            docker compose up -d --build @rest
+            docker compose @files up -d --build @rest
         }
-        'down' { docker compose down @rest }
+        'down' { docker compose @files down @rest }
         'logs' {
             if ($rest.Count -eq 0) { $rest = @('api') }
-            docker compose logs -f @rest
+            docker compose @files logs -f @rest
         }
-        { $_ -in @('accounts', 'model', 'onboard') } {
+        { $_ -in @('accounts', 'model', 'onboard', 'login') } {
             # Host-side: they need this machine's folder, ~/.netrc, .env and
             # `docker compose exec`, none of which the API container can see.
             # Git Bash ships with Git for Windows, which anyone cloning this
@@ -52,11 +72,12 @@ try {
             Write-Host 'usage: pingpong up|down|logs'
             Write-Host '       pingpong accounts [--user someone@example.com]'
             Write-Host '       pingpong model [reviewer|coder <endpoint> <model>]'
+            Write-Host '       pingpong login              (AGENT_MODE=codex-sub only)'
             Write-Host '       pingpong onboard ../some-repo'
             Write-Host '       pingpong doctor'
             Write-Host '       pingpong round owner/repo#123'
         }
-        default { docker compose exec api python -m src.cli @Args }
+        default { docker compose @files exec api python -m src.cli @Args }
     }
     exit $LASTEXITCODE
 }

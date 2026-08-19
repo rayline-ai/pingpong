@@ -1,0 +1,27 @@
+# Overlay for AGENT_MODE=claude-sub. `pingpong up` adds it with a second -f when
+# .env asks for that mode; it does nothing on its own and is not part of the
+# default stack.
+#
+# All it does is put the host's Claude login inside the two agents. There is no
+# router in this mode: Hermes reads ~/.claude/.credentials.json itself, so what
+# it needs is the directory, not a key.
+#
+# Read-write, deliberately. The credential expires and Hermes refreshes it IN
+# PLACE — which is the whole reason this mode can share the host's login at all,
+# and why codex-sub cannot (see docker-compose.codex-sub.yml). A read-only mount
+# would work until it silently did not: once per token lifetime, as a 401 in the
+# middle of a round.
+#
+# CREDENTIALS_DIR is written into .env by `up` (src/subscription.py), not set by
+# hand: compose interpolates .env and cannot expand `~`, and $HOME is routinely
+# unset on Windows.
+
+services:
+
+  reviewer:
+    volumes:
+      - ${CREDENTIALS_DIR:?set AGENT_MODE=claude-sub in .env and run ./pingpong up, which fills this in}:/credentials
+
+  coder:
+    volumes:
+      - ${CREDENTIALS_DIR:?set AGENT_MODE=claude-sub in .env and run ./pingpong up, which fills this in}:/credentials

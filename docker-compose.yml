@@ -86,6 +86,11 @@ services:
       FIX_TIMEOUT: ${FIX_TIMEOUT:-1800}
       BOT_NAME: ${BOT_NAME:-pingpong-coder}
       BOT_EMAIL: ${BOT_EMAIL:-pingpong-coder@local}
+      # Reporting only. The engine does not act on the mode — `hermes-run` in
+      # the agents handles the difference — but "which brain is each role on" is
+      # the first question when a round comes back wrong, and in a subscription
+      # mode the answer is not in rayline/pingpong.json. `doctor` says so.
+      AGENT_MODE: ${AGENT_MODE:-router}
     volumes:
       - work:/work
       - ./prompts:/app/prompts:ro
@@ -126,6 +131,12 @@ services:
       RAYLINE_OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       RAYLINE_OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       HERMES_MODEL_ALIAS: reviewer-brain
+      # router (the default) is everything above. claude-sub and codex-sub skip
+      # the router entirely and let Hermes use this host's own login, in which
+      # case none of the keys above is read and SUBSCRIPTION_MODEL is what
+      # decides the brain — there is no alias to resolve without a router.
+      AGENT_MODE: ${AGENT_MODE:-router}
+      SUBSCRIPTION_MODEL: ${SUBSCRIPTION_MODEL:-}
     volumes:
       - ./rayline/pingpong.json:/etc/pingpong/rayline.json:ro
       # Read-only mount, not an agent setting: the mount is the stronger,
@@ -148,6 +159,10 @@ services:
       RAYLINE_OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       RAYLINE_OPENROUTER_API_KEY: ${OPENROUTER_API_KEY:-}
       HERMES_MODEL_ALIAS: coder-brain
+      # Same as the reviewer, and necessarily the same value: one host login is
+      # one account, so both roles run on it or neither does.
+      AGENT_MODE: ${AGENT_MODE:-router}
+      SUBSCRIPTION_MODEL: ${SUBSCRIPTION_MODEL:-}
     volumes:
       - ./rayline/pingpong.json:/etc/pingpong/rayline.json:ro
       - work:/work

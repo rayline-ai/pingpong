@@ -1,9 +1,10 @@
 """pingpong CLI — run the webhook listener, or drive one round by hand."""
 import argparse
+import os
 import re
 import sys
 
-from . import agents, config, forgejo, gitops, loop, models, webhook
+from . import agents, config, forgejo, gitops, loop, models, subscription, webhook
 
 PR_RE = re.compile(r"^([^/\s]+)/([^#\s]+)#(\d+)$")
 
@@ -61,6 +62,13 @@ def _brain(role):
     """What a role's alias resolves to, read from the mounted routing config.
     Best-effort: it is a report, and a config this cannot parse is Rayline's
     business, not something to fail `doctor` over."""
+    # In a subscription mode there is no router and the mounted config is not
+    # consulted by anything. Reading it anyway would report a model the agents
+    # are demonstrably not using — the worst possible answer to this question.
+    mode = subscription.mode()
+    if subscription.is_subscription(mode):
+        model = os.environ.get("SUBSCRIPTION_MODEL", "").strip()
+        return "%s / %s (host login, no router)" % (mode, model or "SUBSCRIPTION_MODEL is empty")
     try:
         cfg = models.load(ROUTING_CONFIG)
         endpoint_id, model = models.route(cfg, role)
@@ -74,6 +82,7 @@ def _brain(role):
 def cmd_doctor(args, cfg):
     ok = True
     log("forgejo:   %s" % cfg.forgejo_url)
+    log("mode:      %s" % subscription.mode())
     log("reviewer:  %s (alias reviewer-brain)" % cfg.reviewer_container)
     log("  brain:   %s" % _brain("reviewer"))
     log("coder:     %s (alias coder-brain)" % cfg.coder_container)
@@ -85,6 +94,7 @@ def cmd_doctor(args, cfg):
         log("  ! " + problem)
         ok = False
 
+    codex = subscription.mode() == "codex-sub"
     for label, container in (("reviewer", cfg.reviewer_container),
                              ("coder", cfg.coder_container)):
         if agents.container_running(container):
@@ -92,6 +102,15 @@ def cmd_doctor(args, cfg):
         else:
             log("  ! %s container %r is not running" % (label, container))
             ok = False
+            continue
+        # The one credential this project cannot check from the host: it is made
+        # by `pingpong login` and lives in the agent's own volume.
+        if codex:
+            if agents.codex_signed_in(container):
+                log("  %s signed in to ChatGPT" % label)
+            else:
+                log("  ! %s has no ChatGPT session — run ./pingpong login" % label)
+                ok = False
 
     if cfg.reviewer_token:
         try:
