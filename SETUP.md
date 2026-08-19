@@ -193,9 +193,11 @@ not one. Then, in Forgejo:
    with, adds `pingpong-reviewer` and `pingpong-coder` as collaborators with
    **write**, mints the owner a token if `~/.netrc` has none — or replaces one
    the create call refuses for scope — pushes `HEAD` to `main`, sets
-   `pingpong.api`, copies `templates/AGENTS.md` in, and registers the webhook.
-   Every step checks the instance first and reports `already` rather than
-   failing, so a run interrupted halfway is repeated rather than unpicked.
+   `pingpong.api`, copies `templates/AGENTS.md` in, registers the webhook and
+   proves that the webhook's secret still works. Every step checks the instance
+   first and reports `already` rather than failing, so a run interrupted halfway
+   is repeated rather than unpicked — and running it again on a repository that
+   is already set up is a useful check in itself.
 
    That is a script rather than a list of steps here because most of what this
    step knows is conditional — which scope a call needs, what order the
@@ -210,10 +212,14 @@ not one. Then, in Forgejo:
 
    - **The bots need write.** Without it the reviewer cannot post a review and
      the coder cannot push, and the round fails partway rather than at the start.
-   - **The hook's secret must be non-empty.** With an empty one Forgejo answers
-     `201`, the hook looks correct in the UI, and every delivery afterwards fails
-     its signature check. `onboard` refuses to create it rather than leave you a
-     webhook that exists and never fires.
+   - **The hook's secret is checked by using it, every run.** An empty or stale
+     one is the worst failure this setup has: Forgejo answers `201`, the hook
+     looks correct in the UI, and every delivery afterwards fails its signature
+     check. `onboard` refuses to create a hook with an empty secret, and for one
+     that already exists it makes Forgejo sign a throwaway delivery and reads the
+     engine's verdict — the only way to know, since the secret cannot be read
+     back or edited. See [The webhook secret cannot be read
+     back](#the-webhook-secret-cannot-be-read-back).
    - **`main` has to exist before a PR can be opened against it**, which is why
      the folder's `HEAD` goes there first — and why the repository is created
      with `auto_init` false. An initialised repository already holds a commit of
@@ -333,3 +339,48 @@ X-Forgejo-Event: pull_request_rejected      action: reviewed
 Both spellings are accepted. `pingpong logs` names the event of every delivery it
 ignores, and why — a trigger that silently does not fire looks exactly like a
 webhook that never arrived.
+
+### The webhook secret cannot be read back
+
+Three Forgejo behaviours meet here, and each one on its own is enough to send you
+looking for a fault that is not there.
+
+**The API never returns it.** A hook's `config` carries `url` and `content_type`
+and no `secret` key at all — not an empty one, an absent one. Anything printing
+`secret: EMPTY` from that response is reporting a missing key, *not* the
+empty-secret failure above.
+
+**A `PATCH` carrying a new secret answers `200` and changes nothing.** The stored
+value is untouched. So a secret cannot be corrected in place: a hook whose secret
+is wrong has to be deleted and created again.
+
+**The test-delivery endpoint sends a `push`.** `POST /hooks/{id}/tests` on a hook
+that does not list `push` is filtered before delivery — `204`, nothing at the
+engine, and no information either way.
+
+Which leaves one honest question: make Forgejo sign something and see whether the
+engine accepts it. `push` is the right event to use, because the engine verifies
+the signature *before* deciding it does not handle pushes, so nothing runs and no
+round is spent. Add `push` to the hook's events, fire a test delivery, read
+`pingpong logs`, then take `push` back off:
+
+```
+ignored delivery: event='push' action='': event 'push' is not handled   → secret agrees
+rejected delivery: bad signature                                        → it does not
+```
+
+`./pingpong onboard` does exactly this on every run, and replaces the hook when
+the answer is the second one. The case that makes it worth doing is editing
+`PINGPONG_WEBHOOK_SECRET` in `.env` after a repository was onboarded: Forgejo
+keeps the old value, the engine picks up the new one at its next start, and
+nothing anywhere reports a problem.
+
+To read the stored value rather than test it, go to the database. The quoting
+matters on Windows — a bare `/data/...` argument is rewritten to
+`C:/Program Files/Git/data/...` by MSYS before Docker sees it, so the path has to
+be inside `sh -c`:
+
+```bash
+docker compose exec -T forgejo sh -c \
+    'sqlite3 /data/gitea/forgejo.db "select id, url, length(secret) from webhook;"'
+```

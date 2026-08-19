@@ -28,8 +28,9 @@ from the `forgejo` remote and the credential behind it:
 ```bash
 FORGEJO=$(git remote get-url forgejo | sed -E 's#^(https?://[^/]+)/.*#\1#')
 REPO=$(git remote get-url forgejo | sed -E 's#^https?://[^/]+/##; s#\.git$##')
+PY=$(for c in python3 python py; do "$c" -c '' >/dev/null 2>&1 && { echo "$c"; break; }; done)
 ME=$(curl -n -s --max-time 5 "$FORGEJO/api/v1/user" \
-     | python3 -c 'import json,sys; print(json.load(sys.stdin)["login"])')
+     | "$PY" -c 'import json,sys; print(json.load(sys.stdin)["login"])')
 ```
 
 Run those first, every session, and check `$ME` is non-empty before anything
@@ -38,6 +39,14 @@ that now rather than halfway through a push.
 
 `REPO` uses two `sed` expressions rather than one with `.+?` because BSD `sed`
 on macOS has no lazy quantifiers and fails silently.
+
+`PY` is found by **running** each candidate, not by looking it up on `PATH`.
+Windows ships a `python3` that is a Microsoft Store stub: it is a real file, so
+`command -v python3` finds it, and it then prints *"Python was not found"* to
+stderr and exits `49` without running anything. Piped into a command
+substitution that leaves `$ME` empty — which reads exactly like the missing
+`~/.netrc` entry above, and is not one. Empty `$PY` means no working
+interpreter; use any JSON reader you have, or stop and say so.
 
 If the `forgejo` remote is missing, ask the human for the URL — do not guess it:
 
@@ -155,10 +164,23 @@ force-push anything.
 
 ### 2. Make the change
 
+Branch from whichever `main` step 1 left authoritative — `origin/main` if the
+instance mirrors an upstream, `forgejo/main` if the instance is the only forge:
+
 ```bash
-git checkout -b <branch> origin/main
+git fetch forgejo
+git checkout -b <branch> forgejo/main        # or origin/main, per step 1
 # edit, then commit
 ```
+
+Do not assume `origin` exists. A repository that lives only on the instance has
+just the `forgejo` remote, and `origin/main` there is not a stale base — it is a
+name git has never heard of, which fails before you have written anything.
+
+Nor assume a local `main`. `onboard` pushes this folder's `HEAD` to `main` on the
+instance whatever the local branch is called, so a clone that was `git init`ed
+locally is commonly on `master` with no `main` and no tracking. `forgejo/main` is
+the branch the reviewer diffs against; that is the one to branch from.
 
 Keep the diff under `max_diff_bytes`. Past that the reviewer is handed a
 truncated diff and says so, but it is still reviewing a prefix. Split large work
@@ -192,7 +214,7 @@ up to `review_timeout` plus `fix_timeout`.
 
 ```bash
 curl -n -s --max-time 10 "$FORGEJO/api/v1/repos/$REPO/pulls/<n>/reviews" \
-    | python3 -c 'import json,sys; [print(r["state"], r["user"]["login"]) for r in json.load(sys.stdin)]'
+    | "$PY" -c 'import json,sys; [print(r["state"], r["user"]["login"]) for r in json.load(sys.stdin)]'
 ```
 
 The `pingpong/round` commit status is `pending` while a round is in flight and
@@ -200,7 +222,7 @@ resolves on every exit, including a timeout:
 
 ```bash
 curl -n -s --max-time 10 "$FORGEJO/api/v1/repos/$REPO/commits/<sha>/statuses" \
-    | python3 -c 'import json,sys; [print(s["context"], s["status"], s["description"]) for s in json.load(sys.stdin)]'
+    | "$PY" -c 'import json,sys; [print(s["context"], s["status"], s["description"]) for s in json.load(sys.stdin)]'
 ```
 
 Poll on a slow interval. Do not push anything while a round is running — the

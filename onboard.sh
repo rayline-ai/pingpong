@@ -17,6 +17,7 @@ die()  { printf 'onboard: %s\n' "$*" >&2; exit 1; }
 step() { printf '\n== %s\n' "$*"; }
 ok()   { printf '   ok      %s\n' "$*"; }
 have() { printf '   already %s\n' "$*"; }
+warn() { printf '   note    %s\n' "$*"; }
 
 usage() {
     cat >&2 <<'EOF'
@@ -259,6 +260,17 @@ check its entry for $HOST names $OWNER."
     ok "pushed HEAD to main"
 fi
 
+# HEAD went to main whatever the local branch is called, so say so when they
+# differ. `git init` still makes master, and then this folder has no local main
+# and no tracking: a bare `git push` from it does not go where it reads as going,
+# and AGENTS.md's cycle talks about a main that is only on the instance.
+BRANCH=$(git -C "$TARGET" branch --show-current)
+if [ -n "$BRANCH" ] && [ "$BRANCH" != main ]; then
+    warn "local branch is $BRANCH, the instance's is main; they do not track"
+    warn "each other. Branch work from forgejo/main, or rename the local one:"
+    warn "git -C $TARGET branch -m $BRANCH main"
+fi
+
 # On a different port from Forgejo, so it cannot be derived from the remote; and
 # it stays in git config rather than in the repository, which is a rule the
 # reviewed repo's AGENTS.md states and expects to hold.
@@ -278,10 +290,13 @@ fi
 # The webhook
 # ---------------------------------------------------------------------------
 step "webhook"
-api GET "/repos/$OWNER/$REPO/hooks"
-if printf '%s' "$BODY" | grep -q "api:8080/webhook"; then
-    have "delivering to $HOOK_TARGET"
-else
+
+# Forgejo stores these expanded — pull_request_review becomes its _approved,
+# _rejected and _comment variants — which is what actually arrives. One list,
+# used by the create and by the restore below, so the two cannot drift apart.
+EVENTS='"pull_request","pull_request_review","issue_comment"'
+
+create_hook() {
     # An empty secret is the worst outcome available: Forgejo answers 201, the
     # hook looks right in the UI, and every delivery then fails its signature
     # check — indistinguishable from a webhook that never arrived.
@@ -289,16 +304,96 @@ else
         || die "PINGPONG_WEBHOOK_SECRET is empty in .env. Set it to any long
 random string and run ./pingpong up before onboarding, or this hook would be
 created with no secret and silently never fire."
-    # Forgejo stores these expanded — pull_request_review becomes its _approved,
-    # _rejected and _comment variants — which is what actually arrives.
     api POST "/repos/$OWNER/$REPO/hooks" \
-        "{\"type\":\"forgejo\",\"active\":true,
-          \"events\":[\"pull_request\",\"pull_request_review\",\"issue_comment\"],
+        "{\"type\":\"forgejo\",\"active\":true,\"events\":[$EVENTS],
           \"config\":{\"url\":\"$HOOK_TARGET\",\"content_type\":\"json\",
                       \"secret\":\"$PINGPONG_WEBHOOK_SECRET\"}}"
-    case "$STATUS" in
-        201) ok "created, delivering to $HOOK_TARGET" ;;
-        *)   die "could not create the webhook ($STATUS): $BODY" ;;
+    [ "$STATUS" = 201 ] || die "could not create the webhook ($STATUS): $BODY"
+    HOOK_ID=$(printf '%s' "$BODY" | grep -o '"id":[0-9]*' | head -1 | tr -cd '0-9')
+}
+
+# Read the id back per hook rather than parsing the list: `id` and the url it
+# delivers to sit at different depths of the same object, and pulling a matched
+# pair out of one line of JSON in awk is how this gets subtly wrong.
+HOOK_ID=''
+api GET "/repos/$OWNER/$REPO/hooks"
+for id in $(printf '%s' "$BODY" | grep -o '"id":[0-9]*' | tr -cd '0-9\n'); do
+    api GET "/repos/$OWNER/$REPO/hooks/$id"
+    if printf '%s' "$BODY" | grep -qF "$HOOK_TARGET"; then HOOK_ID=$id; break; fi
+done
+if [ -n "$HOOK_ID" ]; then
+    have "delivering to $HOOK_TARGET"
+else
+    create_hook
+    ok "created, delivering to $HOOK_TARGET"
+fi
+
+# ---------------------------------------------------------------------------
+# Does the hook's secret still match the engine's?
+# ---------------------------------------------------------------------------
+# Nothing about the hook can be inspected to answer this. Forgejo omits the
+# secret from every API response, and a PATCH carrying a new one answers 200 and
+# changes nothing — so an operator who edits PINGPONG_WEBHOOK_SECRET after
+# onboarding leaves two halves that disagree, every delivery failing its
+# signature check, and a hook that looks perfect in the UI.
+#
+# So make Forgejo sign something. A push delivery is the cheapest question
+# available: the engine verifies the signature and *then* discards the event as
+# one it does not handle, so a round is never started and nothing is spent.
+verdicts() {
+    docker compose logs api 2>/dev/null \
+        | grep -cE "rejected delivery: bad signature|ignored delivery: event='push'" \
+        || true
+}
+last_verdict() {
+    docker compose logs api 2>/dev/null \
+        | grep -E "rejected delivery: bad signature|ignored delivery: event='push'" \
+        | tail -1
+}
+
+if ! docker compose ps --status running --services 2>/dev/null | grep -qx api; then
+    warn "engine is not running, so the hook's secret cannot be checked."
+    warn "./pingpong up, then run this again — it will pick up here."
+else
+    BEFORE=$(verdicts)
+    # Temporarily, because a hook that delivers pushes to the engine is noise the
+    # rest of the time. Restored before anything is decided, so a failure below
+    # cannot leave it behind.
+    api PATCH "/repos/$OWNER/$REPO/hooks/$HOOK_ID" \
+        "{\"events\":[\"push\",$EVENTS],\"active\":true}"
+    [ "$STATUS" = 200 ] || die "could not ask for a test delivery ($STATUS): $BODY"
+    api POST "/repos/$OWNER/$REPO/hooks/$HOOK_ID/tests"
+    TEST_STATUS=$STATUS
+    VERDICT=''
+    for _ in 1 2 3 4 5 6 7 8 9 10; do
+        sleep 1
+        if [ "$(verdicts)" -gt "$BEFORE" ]; then
+            VERDICT=$(last_verdict)
+            break
+        fi
+    done
+    api PATCH "/repos/$OWNER/$REPO/hooks/$HOOK_ID" \
+        "{\"events\":[$EVENTS],\"active\":true}"
+    [ "$STATUS" = 200 ] || die "the hook is left listening for push events too.
+Remove it in Settings → Webhooks and run this again ($STATUS): $BODY"
+
+    case "$VERDICT" in
+        *"ignored delivery: event='push'"*)
+            ok "secret verified — Forgejo signed a delivery the engine accepted" ;;
+        *"bad signature"*)
+            # Unfixable in place, since the secret cannot be edited. Replacing the
+            # hook loses only a delivery history in which every entry failed.
+            warn "the hook's secret does not match .env — replacing the hook"
+            api DELETE "/repos/$OWNER/$REPO/hooks/$HOOK_ID"
+            [ "$STATUS" = 204 ] || die "could not delete hook $HOOK_ID ($STATUS): $BODY"
+            create_hook
+            ok "recreated with the secret now in .env"
+            warn "run this again to confirm it; a second mismatch means the engine"
+            warn "is running with a stale secret — ./pingpong up to reload .env" ;;
+        *)
+            die "Forgejo accepted the test delivery ($TEST_STATUS) but the engine
+never saw it, so the webhook does not arrive at all. Forgejo calls $HOOK_TARGET
+from inside the compose network; check ALLOWED_HOST_LIST and \`pingpong logs\`." ;;
     esac
 fi
 
