@@ -36,8 +36,8 @@ role_mode() {
 }
 
 # One overlay per role per subscription mode. Per mode because the two want
-# opposite things — claude-sub mounts the host's login, codex-sub deliberately
-# mounts nothing from the host and puts Hermes' own session on a volume — and per
+# opposite things — claude-sub mounts the host's existing Claude login, codex-sub
+# mounts a directory of its own for the session `login` makes there — and per
 # role because compose can interpolate a mount's value but not its presence, so a
 # file naming both services would apply to a role that is on the router. Each
 # file says the rest. Naming the base explicitly because a second -f replaces the

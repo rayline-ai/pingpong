@@ -31,7 +31,7 @@ CONFIG = {
         {"id": "rayline-cloud", "protocol": "anthropic_messages",
          "base_url": "https://api.rayline.ai",
          "api_key_env": "RAYLINE_ROUTER_API_KEY", "auth": "api_key",
-         "models": ["rayline-router"]},
+         "models": ["arc-swift-1.0"]},
     ],
     "routes": {
         "main": {"endpoint": "ollama-local", "model": "qwen3.5:9b-32k",
