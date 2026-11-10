@@ -41,7 +41,7 @@ RUN apt-get update \
 # Pinned rather than `latest`: `router start --config` is the entry point this
 # whole design rests on, so the version that provides it is not something to
 # pick up implicitly. The build fails here if the pin ever loses it.
-ARG RAYLINE_VERSION=0.2.6+7bd2849c99d2
+ARG RAYLINE_VERSION=0.4.2+cd11a0bdc1e2
 RUN curl -fsSL https://get.rayline.ai/install.sh | bash -s -- "${RAYLINE_VERSION}" \
     && /root/.rayline/bin/rayline --version \
     && /root/.rayline/bin/rayline router --help >/dev/null

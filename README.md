@@ -130,15 +130,18 @@ refuses to start if it finds that name overridden.
 ./pingpong model reviewer anthropic-direct claude-opus-5
 ./pingpong model coder    openai-direct    gpt-5.6
 ./pingpong model coder    openrouter       moonshotai/kimi-k3
-./pingpong model reviewer rayline-cloud    rayline-router
+./pingpong model reviewer rayline-cloud    arc-swift-1.0
 docker compose up -d reviewer coder
 ```
 
 Going direct to Anthropic or OpenAI bypasses Rayline's *routing*, not Rayline:
 `rld` still terminates Hermes' Anthropic protocol and translates, which is all
-`openai_chat` costs to use. `rayline-router` is the opposite trade — not a model
-but the cloud-side auto-router, picking per request, which also means the model
-that answered stops appearing in the local `rld` log.
+`openai_chat` costs to use. `arc-sage-1.0` and `arc-swift-1.0` are the opposite
+trade — not models but Rayline's cloud-side ARC router, picking per request
+(Swift is the cheaper tier), which also means the model that answered stops
+appearing in the local `rld` log. `arc-1.0` does not work here: it needs a
+`routing.v_value` in every request, which Hermes does not send and `rld` cannot
+add.
 
 Each endpoint's `models` list is that command's menu, not an allowlist: a model
 that is not on it is written as given, with a note.
