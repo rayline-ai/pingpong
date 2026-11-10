@@ -7,7 +7,8 @@ Three ways, chosen per role, and they are mutually exclusive within a role:
     claude-sub  No router. Hermes uses the Claude subscription this host is
                 already logged into, reading ~/.claude/.credentials.json.
     codex-sub   No router. Hermes holds a ChatGPT session of its own, created
-                once by `./pingpong login` and kept in a volume.
+                once by `./pingpong login` and kept on the host, under
+                ~/.pingpong, so a teardown does not cost it.
 
 Per role rather than instance-wide because the whole premise of this project is
 that the reviewer and the coder are not the same brain. A single mode would have
@@ -203,8 +204,9 @@ def check(name, base=None):
     """Whether this mode can work, as a list of problems. Empty means yes.
 
     A mode that brings its own credentials has nothing to check here: the
-    session lives in a volume the host cannot read, so the agent reports on it
-    at start instead.
+    session directory is made by `up` and filled in by `login`, and whether what
+    landed there is a working grant is a question only the agent can answer, so
+    it reports on it at start instead.
     """
     if not uses_host_login(name):
         return []

@@ -87,9 +87,10 @@ def fix(cfg, worktree, runs_dir, prompt, round_no):
 def codex_signed_in(name):
     """Whether this agent holds a ChatGPT session, for a role on codex-sub.
 
-    Best-effort, for `doctor` alone. The session is made by `pingpong login` and
-    lives in a volume, so unlike every other credential in this project there is
-    nothing on the host to look at — asking the container is the only way.
+    Best-effort, for `doctor` alone. The session is made by `pingpong login`,
+    and the container is asked rather than the host directory it is mounted
+    from: what counts is what the agent can actually read at $HERMES_HOME, which
+    is the image's own path when the overlay for this role was not applied.
 
     Both stores, because a session can be in either: `hermes auth add` writes a
     credential_pool entry, which is what the runtime selects from, while the

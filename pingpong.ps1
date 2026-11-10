@@ -60,9 +60,9 @@ try {
 
     # A second -f replaces the default list rather than adding to it, so the base
     # file is named explicitly. One overlay per role per subscription mode:
-    # claude-sub mounts the host's login, codex-sub deliberately mounts nothing
-    # from the host and puts Hermes' own session on a volume — and a file naming
-    # both services would apply to a role that is on the router.
+    # claude-sub mounts the host's existing Claude login, codex-sub mounts a
+    # directory of its own for the session `login` makes there — and a file
+    # naming both services would apply to a role that is on the router.
     $files = @('-f', 'docker-compose.yml')
     foreach ($role in @('reviewer', 'coder')) {
         if ($modes[$role] -in @('claude-sub', 'codex-sub')) {
